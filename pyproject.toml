@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scientist"
+version = "0.1.0"
+description = "AI Scientist Agent for Rare-Earth-Free Permanent Magnet Discovery"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = { file = "LICENSE" }
+authors = [{ name = "Matt Moderwell", email = "matt@ouro.foundation" }]
+dependencies = [
+    "dspy-ai>=2.0.0",
+    "numpy>=1.24",
+    "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "ouro-py>=0.3.8",
+    "pymatgen>=2024.12.1",
+]
+
+[project.scripts]
+scientist = "app:main"
+
+[tool.setuptools]
+py-modules = ["app"]
+
+[project.urls]
+"Repository" = "https://github.com/ourofoundation/scientist"
+"Issues" = "https://github.com/ourofoundation/scientist/issues"
