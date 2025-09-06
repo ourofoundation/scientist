@@ -17,45 +17,38 @@ import json
 import requests
 import dotenv
 import os
+import mlflow
 from ouro import Ouro
+from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+from tools import ComputationalTools
+from publisher import Publisher
+from models import Material, MaterialProperties
 
 dotenv.load_dotenv(override=True)
 
-# ============================================================================
-# Data Structures
-# ============================================================================
 
+# Enable autologging with all features
+mlflow.dspy.autolog(
+    log_compiles=True,  # Track optimization process
+    log_evals=True,  # Track evaluation results
+    log_traces_from_compile=True,  # Track program traces during optimization
+    # Log traces from module executions
+    log_traces=True,
+)
 
-@dataclass
-class Material:
-    """Represents a candidate magnetic material"""
-
-    composition: str  # e.g., "Fe16N2", "MnBi"
-    atoms: Structure  # pymatgen structure
-    cif_string: str  # CIF string
-    file: dict  # Ouro file
-    predicted_properties: Dict
-
-
-@dataclass
-class MaterialProperties:
-    """Key properties for bulk crystalline magnetic materials"""
-
-    # saturation_magnetization: float  # Ms in T
-    # coercivity: float  # Hc in kA/m
-    # energy_product: float  # BHmax in kJ/m³
-    # magnetocrystalline_anisotropy: float  # K1 in MJ/m³
-    curie_temperature: float  # Tc in K
-    magnetic_density: float
-    cost: float  # Cost in USD / kg
-    e_hull: float  # Energy of hull in eV / atom
-    dynamic_stability: bool  # True or False
+# Configure MLflow tracking
+mlflow.set_tracking_uri("http://127.0.0.1:5000")  # Use local MLflow server
+mlflow.set_experiment("scientist-optimization")
 
 
 class DesignStrategy(Enum):
     """Different approaches to designing magnetic materials"""
 
-    SUBSTITUTION = "element_substitution"
+    RANDOM_GENERATION = "random_generation"
+    CHANGE_SPACE_GROUP = "change_space_group"
+    CHANGE_STOICHIOMETRY = "change_stoichiometry"
+    CHANGE_CHEMISTRY = "change_chemistry"
+    # MUTATION = "mutation"
     # NANOSTRUCTURING = "nanostructure_engineering"
     # PHASE_ENGINEERING = "phase_boundary_engineering"
     # STRAIN_ENGINEERING = "strain_induced_anisotropy"
@@ -105,9 +98,11 @@ class DesignMaterialCandidate(dspy.Signature):
     """Design specific material candidate based on hypothesis."""
 
     hypothesis = dspy.InputField(desc="scientific hypothesis")
-    constraints = dspy.InputField(desc="no rare earth elements, must be synthesizable")
+    constraints = dspy.InputField(
+        desc="no rare earth elements, must be synthesizable, should be less than 20 atoms"
+    )
     design_strategy = dspy.InputField(
-        desc="approach (substitution, nanostructuring, etc)"
+        desc="approach (random generation, mutation, etc)"
     )
 
     composition = dspy.OutputField(
@@ -142,167 +137,6 @@ class RefineHypothesis(dspy.Signature):
 
 
 # ============================================================================
-# Computational Tools Interface
-# ============================================================================
-
-
-class ComputationalToolsInterface:
-    """Interface to computational materials science tools"""
-
-    def __init__(self):
-        self.ouro = Ouro(api_key=os.getenv("OURO_API_KEY"))
-        # Initialize connections to your tools
-        self.mattergen = None  # Initialize MatterGen
-        self.dft_calculator = None  # DFT tool
-        self.micromagnetic_sim = None  # Micromagnetic simulator
-
-    def generate_structure(
-        self, composition: str, space_group: str = None, constraints: Dict = None
-    ) -> Material:
-        """Use Ouro tools to generate crystal structure"""
-
-        print(f"Generating structure for {composition} with space group {space_group}")
-
-        # Clean up space group to match expected format
-        if space_group:
-            # space_group = space_group.replace("-", "")
-            compatible = self.ouro.routes.use(
-                "mmoderwell/get-crystal-gen-compatible-space-groups",
-                query={
-                    "formula": composition,
-                },
-            )
-            compatible_space_groups = [
-                g["number"] for g in compatible["compatible_space_groups"]
-            ]
-            if space_group not in compatible_space_groups:
-                print(f"Space group {space_group} is not compatible with {composition}")
-                space_group = int(np.random.choice(compatible_space_groups))
-
-        response = self.ouro.routes.use(
-            "mmoderwell/post-crystal-gen-generate",
-            body={
-                "formula": composition,
-                "space_group": space_group,
-                "num_crystals": 10,
-                "optimize_geometry": True,
-            },
-            output={
-                "team_id": os.getenv("OURO_TEAM_ID"),
-            },
-        )
-        file = self.ouro.files.retrieve(response["file"]["id"])
-        file_data = file.read_data()
-        # CIF string
-        structure_data = requests.get(file_data.url).text
-
-        atoms = CifParser(StringIO(structure_data)).parse_structures(primitive=False)[0]
-
-        # Placeholder return
-        return Material(
-            composition=composition,
-            atoms=atoms,
-            cif_string=structure_data,
-            file=file.model_dump(mode="json"),
-            predicted_properties={},
-        )
-
-    def evaluate_material_properties(self, material: Material) -> MaterialProperties:
-        """Evaluate magnetic properties using computational tools"""
-
-        print(f"Evaluating material properties for {material.composition}")
-
-        #
-        calls = [
-            {
-                "name": "hermes/post-structure-cost",
-                "body": {
-                    "file": material.file,
-                },
-            },
-            {
-                "name": "hermes/post-magnetism-curie-temperature",
-                "body": {
-                    "file": material.file,
-                },
-            },
-            {
-                "name": "hermes/post-magnetism-magnetic-saturation",
-                "body": {
-                    "file": material.file,
-                },
-            },
-            {
-                "name": "mmoderwell/post-materials-thermo-ehull",
-                "body": {
-                    "file": material.file,
-                },
-            },
-            {
-                "name": "mmoderwell/post-materials-phonons-dispersion",
-                "body": {
-                    "file": material.file,
-                },
-            },
-        ]
-
-        # Execute all route calls concurrently
-        output_overrides = {"team_id": os.getenv("OURO_TEAM_ID")}
-        start_time = time.time()
-        results = {}
-        errors = {}
-        max_workers = min(8, len(calls)) if len(calls) > 0 else 1
-
-        def invoke(call_config: Dict) -> Tuple[str, Dict]:
-            route_name = call_config["name"]
-            try:
-                body = call_config.get("body")
-                response = self.ouro.routes.use(
-                    route_name,
-                    input_asset={"assetId": body["file"]["id"], "assetType": "file"},
-                    # body={"file": {**body["file"]["metadata"], **body["file"]}},
-                    output=output_overrides,
-                    timeout=180.0,
-                )
-                return route_name, response
-            except Exception as exc:  # noqa: BLE001
-                return route_name, {"error": str(exc)}
-
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_name = {executor.submit(invoke, c): c["name"] for c in calls}
-            for future in as_completed(future_to_name):
-                name = future_to_name[future]
-                try:
-                    route_name, response = future.result()
-                    if isinstance(response, dict) and "error" in response:
-                        errors[route_name] = response["error"]
-                    else:
-                        results[route_name] = response
-                except Exception as exc:  # noqa: PERF203,BLE001
-                    errors[name] = str(exc)
-
-        elapsed = time.time() - start_time
-        print(f"Parallel route calls completed in {elapsed:.2f}s")
-        if errors:
-            print(f"One or more route calls failed: {errors}")
-
-        # Placeholder calculation
-        return MaterialProperties(
-            curie_temperature=results["hermes/post-magnetism-curie-temperature"][
-                "temperature"
-            ],
-            magnetic_density=results["hermes/post-magnetism-magnetic-saturation"][
-                "magnetisation_density"
-            ]["value"],
-            cost=results["hermes/post-structure-cost"]["cost_per_kg"]["value"],
-            e_hull=results["mmoderwell/post-materials-thermo-ehull"]["e_above_hull"],
-            dynamic_stability=not results[
-                "mmoderwell/post-materials-phonons-dispersion"
-            ]["imaginary_modes_detected"],
-        )
-
-
-# ============================================================================
 # DSPy Modules for AI Scientist
 # ============================================================================
 
@@ -322,7 +156,7 @@ class MagnetDiscoveryScientist(dspy.Module):
         self.refine_hypothesis = dspy.ChainOfThought(RefineHypothesis)
 
         # Computational tools
-        self.comp_tools = ComputationalToolsInterface()
+        self.tools = ComputationalTools()
 
         # Memory of discoveries
         self.discovery_history = []
@@ -337,6 +171,9 @@ class MagnetDiscoveryScientist(dspy.Module):
             rare_earth_free_constraint="No La, Ce, Pr, Nd, Pm, Sm, Eu, Gd, Tb, Dy, Ho, Er, Tm, Yb, Lu",
             target_properties=json.dumps(target_properties),
         )
+
+        print(f"Landscape analysis: {landscape.analysis}")
+        print(f"Promising directions: {landscape.promising_directions}")
 
         # Track results across iterations
         all_results = []
@@ -359,9 +196,22 @@ class MagnetDiscoveryScientist(dspy.Module):
             else:
                 # Refine based on previous results
                 last_result = all_results[-1]
+                # Include SG feedback to the refinement step so the agent learns
+                # when a requested SG was incompatible and what was ultimately used/resolved
                 refinement = self.refine_hypothesis(
                     original_hypothesis=current_hypothesis,
-                    results=json.dumps(last_result["properties"]),
+                    results=json.dumps(
+                        {
+                            **last_result["properties"],
+                            "space_group_requested": last_result.get(
+                                "space_group_requested"
+                            ),
+                            "space_group_used": last_result.get("space_group_used"),
+                            "space_group_resolved": last_result.get(
+                                "space_group_resolved"
+                            ),
+                        }
+                    ),
                     insights=last_result["insights"],
                     iteration=str(iteration),
                 )
@@ -381,46 +231,49 @@ class MagnetDiscoveryScientist(dspy.Module):
             # Design specific material
             material_design = self.design_material(
                 hypothesis=current_hypothesis,
-                constraints="No rare earths, synthesizable via standard methods",
+                constraints="No rare earths, synthesizable via standard methods, should be less than 20 atoms",
                 design_strategy=strategy.value,
             )
 
             # Generate structure using computational tools
-            material = self.comp_tools.generate_structure(
+            material = self.tools.generate_structure(
                 composition=material_design.composition,
                 space_group=material_design.space_group,
                 # constraints={"structure_type": material_design.structure_type},
             )
 
             # Evaluate properties
-            material_props = self.comp_tools.evaluate_material_properties(material)
+            material_props = self.tools.evaluate_material_properties(material)
 
             # Interpret results
             interpretation = self.interpret_results(
-                material=f"{material.composition} with space group {material_design.space_group}",
+                material=(
+                    f"{material.composition} with space group "
+                    f"{material.resolved_space_group if material.resolved_space_group is not None else material.used_space_group}"
+                ),
                 simulation_results=json.dumps({"material": material_props.__dict__}),
                 target_properties=json.dumps(target_properties),
             )
 
             # Calculate overall score
-            score = self._calculate_score(material_props, target_properties)
+            score = self._calculate_score(material, material_props, target_properties)
 
             # Store results
             result = {
                 "iteration": iteration,
                 "hypothesis": current_hypothesis,
                 "composition": material_design.composition,
-                "space_group": material_design.space_group,
-                # "structure": material_design.structure_type,
-                # "synthesis": material_design.synthesis_route,
+                "num_atoms": material.num_atoms,
+                "space_group_requested": material.requested_space_group,
+                "space_group_used": material.used_space_group,
+                "space_group_resolved": material.resolved_space_group,
+                "structure_file": material.file,
+                "artifacts": material.artifacts,
                 "properties": material_props.__dict__,
-                # "stability": stability,
                 "insights": interpretation.key_insights,
                 "score": score,
             }
             all_results.append(result)
-
-            print(result)
 
             # Track best materials
             if score > best_score:
@@ -435,6 +288,7 @@ class MagnetDiscoveryScientist(dspy.Module):
             print(
                 f"Iteration {iteration}: {material_design.composition} - Score: {score:.3f}"
             )
+            print("-" * 70)
 
         return {
             "best_material": self.best_materials[-1] if self.best_materials else None,
@@ -445,7 +299,8 @@ class MagnetDiscoveryScientist(dspy.Module):
     def _select_strategy(self, previous_results: List) -> DesignStrategy:
         """Select design strategy based on previous results"""
         if not previous_results:
-            return DesignStrategy.SUBSTITUTION
+            print("No previous results, selecting random generation")
+            return DesignStrategy.RANDOM_GENERATION
 
         # Analyze what strategies have been working
         strategy_scores = {}
@@ -456,14 +311,18 @@ class MagnetDiscoveryScientist(dspy.Module):
         # For now, rotate through strategies
         iteration = len(previous_results)
         strategies = list(DesignStrategy)
-        return strategies[iteration % len(strategies)]
+        chosen = strategies[iteration % len(strategies)]
+        print(f"Selecting strategy: {chosen}")
+        return chosen
 
     def _select_alternative_strategy(self, current: DesignStrategy) -> DesignStrategy:
         """Select alternative strategy when current isn't working"""
         alternatives = [s for s in DesignStrategy if s != current]
         return np.random.choice(alternatives)
 
-    def _calculate_score(self, props: MaterialProperties, targets: Dict) -> float:
+    def _calculate_score(
+        self, material: Material, props: MaterialProperties, targets: Dict
+    ) -> float:
         """Calculate overall material score"""
         score = 0.0
         weights = {
@@ -472,32 +331,31 @@ class MagnetDiscoveryScientist(dspy.Module):
             "magnetic_density": 0.15,
             "curie_temperature": 0.15,
             "dynamic_stability": 0.1,
+            "num_atoms": 0.1,
         }
 
-        print(props)
-        print(targets)
-        print(props.__dict__)
+        # Number of atoms
+        if "num_atoms_max" in targets:
+            score += weights["num_atoms"] * min(
+                1.0, material.num_atoms / targets["num_atoms_max"]
+            )
 
         # Energy above the hull
         if "e_hull_max" in targets:
             score += weights["e_hull"] * min(1.0, props.e_hull / targets["e_hull_max"])
-
         # Cost
         if "cost_max" in targets:
             score += weights["cost"] * min(1.0, props.cost / targets["cost_max"])
-
         # Magnetic density
         if "magnetic_density_min" in targets:
             score += weights["magnetic_density"] * min(
                 1.0, props.magnetic_density / targets["magnetic_density_min"]
             )
-
         # Curie temperature (must be well above room temperature)
         if "curie_temperature_min" in targets:
             score += weights["curie_temperature"] * min(
                 1.0, props.curie_temperature / targets["curie_temperature_min"]
             )
-
         # Dynamic stability
         score += weights["dynamic_stability"] * (
             1.0 if props.dynamic_stability else 0.3
@@ -607,11 +465,11 @@ def optimize_scientist(base_scientist: MagnetDiscoveryScientist, training_data: 
 def main():
     # Configure DSPy with your LLM
     lm = dspy.LM(
-        "openai/gpt-4o-mini",
+        "openai/gpt-4.1-mini",
         api_key=os.getenv("OPENAI_API_KEY"),
-        max_tokens=2000,
-        cache=True,
-        # temperature=0.7,
+        max_tokens=32000,
+        cache=False,
+        temperature=1,
     )
     dspy.settings.configure(lm=lm)
 
@@ -620,6 +478,7 @@ def main():
 
     # Define target properties for a high-performance permanent magnet
     targets = {
+        "num_atoms_max": 20,
         "cost_max": 100,  # USD / kg
         "magnetic_density_min": 0.10,
         "curie_temp_min": 500,  # K - well above room temperature
@@ -628,13 +487,11 @@ def main():
     }
 
     known_materials = [
-        "Nd2Fe14B (has rare earths, BHmax~400 kJ/m³)",
-        "SmCo (has rare earths, BHmax~250 kJ/m³)",
-        "Ferrite (BHmax~40 kJ/m³, cheap)",
-        "Alnico (BHmax~80 kJ/m³, low Hc)",
-        "FePt (expensive, BHmax~350 kJ/m³)",
-        "MnBi (BHmax~75 kJ/m³, positive temp coefficient)",
-        "Fe16N2 (theoretical, potentially BHmax~500 kJ/m³)",
+        "Nd2Fe14B",
+        "SmCo",
+        "FePt",
+        "MnBi",
+        "Fe16N2",
     ]
 
     print("Starting AI Scientist for Rare-Earth-Free Permanent Magnet Discovery")
@@ -654,10 +511,9 @@ def main():
         best = discovery["best_material"]
         print("\n" + "=" * 70)
         print("BEST DISCOVERY:")
-        print(f"Material: {best['material']}")
-        print(f"Structure: {best['structure']}")
+        print(f"Composition: {best['composition']}")
+        print(f"Space Group: {best['space_group_used']}")
         print(f"Hypothesis: {best['hypothesis']}")
-        print(f"Synthesis Route: {best['synthesis']}")
         print(f"Score: {best['score']:.3f}")
         print("\nPredicted Properties:")
         for prop, value in best["properties"].items():
@@ -672,6 +528,16 @@ def main():
     # optimized_scientist = optimize_scientist(scientist, training_data)
 
     # print("Optimization complete! The AI Scientist has learned from its discoveries.")
+
+    # Publish run summary to Ouro
+    try:
+        publisher = Publisher()
+        publisher.publish_run_summary(discovery=discovery, targets=targets)
+    except Exception as _publish_exc:  # noqa: BLE001
+        import traceback
+
+        traceback.print_exc()
+        print(f"Publishing to Ouro failed: {_publish_exc}")
 
 
 if __name__ == "__main__":
