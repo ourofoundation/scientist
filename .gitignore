@@ -205,3 +205,15 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+
+
+# Scientist
+**/traces.json
+*.xyz
+*.cif
+*.traj
+*.sqlite
+
+# VSCode/Cursor
+settings.json
