@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional, List, Tuple
-import os
-import datetime as _dt
-import json
+from typing import Dict, Optional, List, Any, TYPE_CHECKING
 
 from ouro import Ouro
 import pandas as pd
+
+from .logging import get_logger
+
+if TYPE_CHECKING:
+    from ouro.posts import Editor
+
+logger = get_logger("publisher")
 
 
 class Publisher:
@@ -34,9 +38,7 @@ class Publisher:
 
         Returns the created post (dict) with its id for downstream asset parenting.
         """
-        title = None
         editor = self.ouro.posts.Editor()
-        # editor.new_header(level=1, text=title)
         editor.new_paragraph(
             text="Run started. This post will be updated with results."
         )
@@ -47,7 +49,10 @@ class Publisher:
             )
             editor.new_table(df)
 
-        post = self._create_post(title=title, content=editor, description=description)
+        post = self._create_post(
+            title=run_title, content=editor, description=description
+        )
+        logger.info(f"Created initial post: {post.get('id') if post else 'None'}")
         return post
 
     def publish_run_summary(
@@ -56,6 +61,7 @@ class Publisher:
         targets: Optional[Dict] = None,
         run_title: Optional[str] = None,
         post_id: Optional[str] = None,
+        token_usage: Optional[Dict] = None,
     ) -> Optional[Dict]:
         """Publish a discovery run summary to Ouro.
 
@@ -64,6 +70,7 @@ class Publisher:
             targets: Target properties used in discovery
             run_title: Optional custom title for the post
             post_id: If provided, update this existing post instead of creating new
+            token_usage: Optional token usage statistics from DSPy LM
 
         Returns:
             Published post data or None if no discovery
@@ -71,23 +78,20 @@ class Publisher:
         if not discovery:
             return None
 
-        print("publishing run summary")
+        logger.info("Publishing run summary")
 
         best = discovery.get("best_material")
         all_results: List[Dict] = discovery.get("all_results", [])
+
         if not best:
             title = run_title or "Scientist run: no best material found"
-            content = self._build_content_none(all_results, targets, title)
-            # Use default description when no best material found
+            content = self._build_content_none(all_results, targets, title, token_usage)
             if post_id:
                 return self._update_post(post_id=post_id, title=title, content=content)
             return self._create_post(title, content)
 
         structure_asset = best.get("structure_file")
-
-        phase_asset = best["artifacts"]["mmoderwell/post-materials-thermo-ehull"][
-            "file"
-        ]
+        phase_asset = self._get_artifact(best, "mmoderwell/calculate-energy-above-hull")
 
         title = run_title or self._default_title(best)
         content = self._build_content_best(
@@ -98,10 +102,11 @@ class Publisher:
             phase_asset=phase_asset,
             title=title,
             discovery=discovery,
+            token_usage=token_usage,
         )
 
-        # Create rich description using available metadata
         description = self._generate_rich_post_description(best, discovery)
+
         if post_id:
             return self._update_post(
                 post_id=post_id, title=title, content=content, description=description
@@ -112,9 +117,7 @@ class Publisher:
         """Generate default title for discovery post."""
         composition = best["composition"]
         score = best["score"]
-        generation_method = best.get("generation_method", "from_scratch")
 
-        # Add space group info to title
         sg_info = ""
         if best.get("space_group_resolved"):
             sg_info = f" SG #{best['space_group_resolved']}"
@@ -124,19 +127,24 @@ class Publisher:
         return f"AI Scientist: {composition}{sg_info} (score {score:.3f})"
 
     def _build_content_none(
-        self, all_results: List[Dict], targets: Optional[Dict], title: str
+        self,
+        all_results: List[Dict],
+        targets: Optional[Dict],
+        title: str,
+        token_usage: Optional[Dict] = None,
     ) -> "Editor":
         """Build content when no best material was found."""
         editor = self.ouro.posts.Editor()
         editor.new_header(level=1, text=title)
         editor.new_paragraph(text="No best material was selected in this run.")
+
         if targets:
             editor.new_header(level=2, text="Targets")
-            # Render targets as a small table (key/value)
             df = pd.DataFrame(
                 {"Target": list(targets.keys()), "Value": list(targets.values())}
             )
             editor.new_table(df)
+
         if all_results:
             editor.new_header(level=2, text="Iterations (scores)")
             df_iters = pd.DataFrame(
@@ -151,6 +159,11 @@ class Publisher:
                 ]
             )
             editor.new_table(df_iters)
+
+        # Token usage section
+        if token_usage:
+            self._add_token_usage_section(editor, token_usage)
+
         return editor
 
     def _build_content_best(
@@ -162,6 +175,7 @@ class Publisher:
         phase_asset: Optional[Dict],
         title: str,
         discovery: Dict,
+        token_usage: Optional[Dict] = None,
     ) -> "Editor":
         """Build content for successful discovery."""
         editor = self.ouro.posts.Editor()
@@ -171,7 +185,9 @@ class Publisher:
         hypothesis = best.get("hypothesis")
         if hypothesis:
             editor.new_header(level=2, text="Hypothesis")
-            editor.new_paragraph(text=hypothesis)
+            hypothesis_content = self.ouro.posts.Editor()
+            hypothesis_content.from_markdown(hypothesis)
+            editor.append(hypothesis_content)
 
         # Summary table
         composition = best.get("composition")
@@ -191,20 +207,17 @@ class Publisher:
         if generation_method == "mutation" and parent_id != "none":
             summary_data.insert(-1, ("parent material", parent_id))
 
-        summary_table = pd.DataFrame(
-            summary_data,
-            columns=["Property", "Value"],
-        )
+        summary_table = pd.DataFrame(summary_data, columns=["Property", "Value"])
         editor.new_table(summary_table)
 
-        # Embed structure as inline asset
+        # Structure embed
         if structure_asset and structure_asset.get("id"):
             editor.new_header(level=2, text="Structure")
             editor.new_inline_asset(
-                id=structure_asset["id"], asset_type="file", view_mode="chart"
+                id=structure_asset["id"], asset_type="file", view_mode="preview"
             )
 
-        # Predicted properties table
+        # Properties table
         properties: Dict = best.get("properties", {})
         if properties:
             editor.new_header(level=2, text="Predicted properties")
@@ -216,17 +229,19 @@ class Publisher:
             )
             editor.new_table(df_props)
 
-        # Insights about the best candidate
+        # Insights
         insights = best.get("insights")
         if insights:
             editor.new_header(level=2, text="Summary")
-            editor.new_paragraph(text=insights)
+            insights_content = self.ouro.posts.Editor()
+            insights_content.from_markdown(insights)
+            editor.append(insights_content)
 
-        # Phase diagram embed
+        # Phase diagram
         if phase_asset and phase_asset.get("id"):
             editor.new_header(level=2, text="Phase diagram")
             editor.new_inline_asset(
-                id=phase_asset["id"], asset_type="file", view_mode="chart"
+                id=phase_asset["id"], asset_type="file", view_mode="preview"
             )
 
         # Trajectory visualization
@@ -236,39 +251,28 @@ class Publisher:
             frame_count = trajectory_viz.get("frame_count", 0)
             if frame_count > 0:
                 editor.new_paragraph(
-                    text=f"Interactive visualization showing the evolution of {frame_count} structural frames during the mutation process."
+                    text=f"Interactive visualization showing the evolution of "
+                    f"{frame_count} structural frames during the mutation process."
                 )
 
-            # Embed the visualization result from the matterviz route
             viz_result = trajectory_viz["visualization"]
             if viz_result.get("file") and viz_result["file"].get("id"):
                 editor.new_inline_asset(
-                    id=viz_result["file"]["id"], asset_type="file", view_mode="chart"
+                    id=viz_result["file"]["id"], asset_type="file", view_mode="preview"
                 )
 
-        # System Evolution Steps
-        # editor.new_header(level=2, text="System Evolution")
-        # evolution_steps = self._get_evolution_steps(all_results, discovery)
-        # for i, step in enumerate(evolution_steps, 1):
-        #     editor.new_paragraph(text=f"**{i}. {step['title']}**")
-        #     editor.new_paragraph(text=step["description"])
-        #     if step.get("reasoning"):
-        #         editor.new_paragraph(text=f"*Reasoning:* {step['reasoning']}")
-        #     editor.new_paragraph(text="")  # Add spacing
-
-        # Mutations summary if available
+        # Mutation analysis
         mutation_summary = discovery.get("mutation_summary", {})
         if mutation_summary:
             editor.new_header(level=2, text="Mutation Analysis")
-            mut_data = []
-            for mut_type, stats in mutation_summary.items():
-                mut_data.append(
-                    {
-                        "mutation_type": mut_type,
-                        "success_rate": f"{stats['success_rate']:.2%}",
-                        "attempts": stats["total_attempts"],
-                    }
-                )
+            mut_data = [
+                {
+                    "mutation_type": mut_type,
+                    "success_rate": f"{stats['success_rate']:.2%}",
+                    "attempts": stats["total_attempts"],
+                }
+                for mut_type, stats in mutation_summary.items()
+            ]
             if mut_data:
                 df_mutations = pd.DataFrame(mut_data)
                 editor.new_table(df_mutations)
@@ -291,13 +295,52 @@ class Publisher:
             )
             editor.new_table(df_iters)
 
+        # Token usage section
+        if token_usage:
+            self._add_token_usage_section(editor, token_usage)
+
         return editor
 
+    def _add_token_usage_section(self, editor: "Editor", token_usage: Dict) -> None:
+        """Add token usage and cost section to the report.
+
+        Args:
+            editor: The Ouro Editor instance
+            token_usage: Token usage statistics dictionary
+        """
+        editor.new_header(level=2, text="LLM Usage & Cost")
+
+        usage_data = [
+            ("Total LLM calls", f"{token_usage.get('total_calls', 0):,}"),
+            ("Input tokens", f"{token_usage.get('input_tokens', 0):,}"),
+            ("Output tokens", f"{token_usage.get('output_tokens', 0):,}"),
+            ("Total tokens", f"{token_usage.get('total_tokens', 0):,}"),
+            (
+                "Estimated cost (USD)",
+                f"${token_usage.get('estimated_cost_usd', 0):.4f}",
+            ),
+        ]
+
+        df_usage = pd.DataFrame(usage_data, columns=["Metric", "Value"])
+        editor.new_table(df_usage)
+
     def _get_artifact(self, best: Dict, route_name: str) -> Optional[Dict]:
-        """Extract artifact from best material results."""
-        artifacts = best.get("artifacts") or {}
-        response = artifacts.get(route_name)
-        return response["file"]["id"]
+        """Safely extract artifact from best material results.
+
+        Args:
+            best: Best material dictionary
+            route_name: Name of the route to get artifact for
+
+        Returns:
+            Artifact file dict if available, None otherwise
+        """
+        try:
+            artifacts = best.get("artifacts") or {}
+            route_result = artifacts.get(route_name) or {}
+            return route_result.get("file")
+        except (KeyError, TypeError):
+            logger.debug(f"Artifact not found for route: {route_name}")
+            return None
 
     def _create_post(
         self, title: str, content: "Editor", description: Optional[str] = None
@@ -324,8 +367,7 @@ class Publisher:
         content: "Editor",
         description: Optional[str] = None,
     ) -> Optional[Dict]:
-        """Update an existing post on Ouro"""
-
+        """Update an existing post on Ouro."""
         post = self.ouro.posts.update(
             id=post_id,
             content=content,
@@ -338,201 +380,53 @@ class Publisher:
 
     def _generate_rich_post_description(self, best: Dict, discovery: Dict) -> str:
         """Generate a rich post description using available metadata."""
-        description_parts = []
+        parts = []
 
-        # Basic material info
+        # Basic info
         composition = best.get("composition", "Unknown")
         score = best.get("score", 0)
-        description_parts.append(
-            f"AI-discovered magnetic material: {composition} (performance score: {score:.3f})"
+        parts.append(
+            f"AI-discovered magnetic material: {composition} "
+            f"(performance score: {score:.3f})"
         )
 
-        # Space group and structure info
+        # Space group
         sg_resolved = best.get("space_group_resolved")
         sg_used = best.get("space_group_used")
-        sg_requested = best.get("space_group_requested")
-
         if sg_resolved:
-            description_parts.append(
-                f"Space group: {sg_resolved} (resolved from structure)"
-            )
+            parts.append(f"Space group: {sg_resolved} (resolved)")
         elif sg_used:
-            description_parts.append(f"Space group: {sg_used} (used in generation)")
-        elif sg_requested:
-            description_parts.append(f"Requested space group: {sg_requested}")
+            parts.append(f"Space group: {sg_used}")
 
-        # Generation method and lineage
+        # Generation method
         generation_method = best.get("generation_method", "from_scratch")
         if generation_method == "mutation":
             parent_id = best.get("parent_material_id", "")
             if parent_id and parent_id != "none":
-                description_parts.append(
-                    f"Generated via AI-guided mutation from parent material {parent_id}"
-                )
-                # Add mutation history info
+                parts.append(f"Mutated from {parent_id}")
                 mutation_history = best.get("mutation_history", [])
                 if mutation_history:
                     last_mutation = mutation_history[-1]
                     mutation_type = last_mutation.get("mutation_type", "unknown")
-                    description_parts.append(f"Last mutation: {mutation_type}")
-        elif generation_method == "from_scratch":
-            description_parts.append(
-                "AI-generated from scratch using crystal structure prediction"
-            )
+                    parts.append(f"Last mutation: {mutation_type}")
+        else:
+            parts.append("Generated from scratch")
 
         # Key properties
         properties = best.get("properties", {})
         if properties:
             prop_summary = []
-            if "curie_temperature" in properties:
-                tc = properties["curie_temperature"]
-                prop_summary.append(f"Tc: {tc:.0f}K")
-            if "magnetic_density" in properties:
-                md = properties["magnetic_density"]
-                prop_summary.append(f"Ms: {md:.2f}T")
-            if "cost" in properties:
-                cost = properties["cost"]
-                prop_summary.append(f"Cost: ${cost:.0f}/kg")
-            if "e_hull" in properties:
-                eh = properties["e_hull"]
-                prop_summary.append(f"E_hull: {eh:.3f}eV/atom")
-            if "dynamic_stability" in properties:
-                stability = "stable" if properties["dynamic_stability"] else "unstable"
-                prop_summary.append(f"Dynamically {stability}")
-
+            if "curie_temperature" in properties and properties["curie_temperature"]:
+                prop_summary.append(f"Tc: {properties['curie_temperature']:.0f}K")
+            if "magnetic_density" in properties and properties["magnetic_density"]:
+                prop_summary.append(f"Ms: {properties['magnetic_density']:.2f}T")
+            if "cost" in properties and properties["cost"]:
+                prop_summary.append(f"${properties['cost']:.0f}/kg")
             if prop_summary:
-                description_parts.append("Key properties: " + ", ".join(prop_summary))
+                parts.append("Properties: " + ", ".join(prop_summary))
 
         # Discovery context
         iterations_run = discovery.get("iterations_run", 0)
-        description_parts.append(f"Discovered in {iterations_run} AI iterations")
+        parts.append(f"Discovered in {iterations_run} iterations")
 
-        # Mutation analysis if available
-        mutation_summary = discovery.get("mutation_summary", {})
-        if mutation_summary:
-            successful_mutations = [
-                k for k, v in mutation_summary.items() if v.get("success_rate", 0) > 0
-            ]
-            if successful_mutations:
-                description_parts.append(
-                    f"Successful mutation strategies: {', '.join(successful_mutations)}"
-                )
-
-        # AI insights
-        insights = best.get("insights", "")
-        if insights and len(insights) > 50:  # Only include if substantial
-            description_parts.append(insights)
-
-        return " | ".join(description_parts)
-
-    def _get_evolution_steps(
-        self, all_results: List[Dict], discovery: Dict
-    ) -> List[Dict]:
-        """Extract evolutionary steps from discovery results with reasoning."""
-        if not all_results:
-            return []
-
-        steps = []
-
-        # Step 1: Initial exploration phase
-        initial_results = [r for r in all_results if r.get("iteration", 0) < 3]
-        if initial_results:
-            initial_methods = [
-                r.get("generation_method", "from_scratch") for r in initial_results
-            ]
-            from_scratch_count = initial_methods.count("from_scratch")
-
-            steps.append(
-                {
-                    "title": "Initial Material Generation",
-                    "description": f"Generated {len(initial_results)} initial material candidates using AI-driven hypothesis generation. Started with {from_scratch_count} from-scratch generations.",
-                    "reasoning": "System begins with broad exploration to establish baseline materials and understand the chemical space, building up a database of candidates for future mutation operations.",
-                }
-            )
-
-        # Step 2: Transition to mutation-based discovery
-        mutation_results = [
-            r for r in all_results if r.get("generation_method") == "mutation"
-        ]
-        if mutation_results:
-            first_mutation_iter = min(r.get("iteration", 0) for r in mutation_results)
-
-            steps.append(
-                {
-                    "title": "Transition to Evolutionary Optimization",
-                    "description": f"Began intelligent material mutations at iteration {first_mutation_iter}. Applied {len(mutation_results)} mutation operations to promising parent materials.",
-                    "reasoning": "Once baseline materials were established, the system shifted to evolutionary improvement by mutating high-scoring candidates rather than random generation, enabling more targeted optimization.",
-                }
-            )
-
-        # Step 3: Strategy refinement based on success rates
-        mutation_summary = discovery.get("mutation_summary", {})
-        if mutation_summary:
-            successful_mutations = [
-                k for k, v in mutation_summary.items() if v.get("success_rate", 0) > 0.3
-            ]
-            total_mutations = sum(
-                v.get("total_attempts", 0) for v in mutation_summary.values()
-            )
-
-            if successful_mutations:
-                steps.append(
-                    {
-                        "title": "Strategy Refinement and Learning",
-                        "description": f'Identified {len(successful_mutations)} effective mutation strategies: {", ".join(successful_mutations)}. Applied {total_mutations} total mutations with adaptive strategy selection.',
-                        "reasoning": "The system learned which mutation types were most effective for the target properties, focusing computational resources on the most promising transformation strategies while discarding unsuccessful approaches.",
-                    }
-                )
-
-        # Step 4: Score progression analysis
-        scores = [r.get("score", 0) for r in all_results if r.get("score") is not None]
-        if len(scores) > 1:
-            initial_score = scores[0]
-            final_score = max(scores)
-            improvement = (
-                ((final_score - initial_score) / initial_score * 100)
-                if initial_score > 0
-                else 0
-            )
-
-            # Find when the best material was discovered
-            best_score = max(scores)
-            best_iter = next(
-                (
-                    r.get("iteration", 0)
-                    for r in all_results
-                    if r.get("score") == best_score
-                ),
-                0,
-            )
-
-            steps.append(
-                {
-                    "title": "Performance Optimization Convergence",
-                    "description": f"Achieved {improvement:.1f}% improvement from initial score ({initial_score:.3f}) to final best ({final_score:.3f}). Best material discovered at iteration {best_iter}.",
-                    "reasoning": "The evolutionary process successfully optimized target properties through iterative refinement, with the AI learning to generate progressively better materials by leveraging successful mutation patterns and chemical insights.",
-                }
-            )
-
-        # Step 5: Chemical space exploration analysis
-        all_compositions = [
-            r.get("composition", "") for r in all_results if r.get("composition")
-        ]
-        unique_elements = set()
-        for comp in all_compositions:
-            # Extract elements from composition strings (simplified)
-            import re
-
-            elements = re.findall(r"[A-Z][a-z]?", comp)
-            unique_elements.update(elements)
-
-        if len(unique_elements) > 3:  # Only add if we explored diverse chemistry
-            steps.append(
-                {
-                    "title": "Chemical Space Diversification",
-                    "description": f"Explored {len(unique_elements)} different elements across {len(set(all_compositions))} unique compositions, systematically mapping the rare-earth-free magnetic material space.",
-                    "reasoning": "Comprehensive exploration of chemical diversity ensures the discovery process doesn't get trapped in local optima and identifies the most promising regions of chemical space for permanent magnet applications.",
-                }
-            )
-
-        return steps
+        return " | ".join(parts)

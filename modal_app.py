@@ -1,78 +1,72 @@
-"""Main entry point for the AI Scientist."""
+"""Modal app for running the AI Scientist in the cloud."""
 
-from typing import Dict, Any
+import modal
 
-import dspy
-import mlflow
+# Define the image with all dependencies
+# ggen requires: pyxtal, ase, orb-models, scipy
+image = modal.Image.debian_slim(python_version="3.11").pip_install(
+    # scientist dependencies
+    "dspy-ai>=2.0.0",
+    "numpy>=1.24",
+    "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "ouro-py>=0.3.13",
+    "pymatgen>=2024.12.1",
+    "mlflow>=2.21.1",
+    "pandas>=2.2.2",
+    # ggen dependencies
+    "pyxtal>=0.5.0",
+    "ase>=3.22.0",
+    "orb-models>=0.1.0",
+    "scipy>=1.7.0",
+    "requests>=2.25.0",
+)
 
-from .core.config import ScientistConfig
-from .core.scientist import MaterialDiscoveryScientist
-from .utils.publisher import Publisher
-from .utils.logging import setup_logging, get_logger
+app = modal.App("scientist", image=image)
 
-# Initialize logging
-setup_logging()
-logger = get_logger("main")
+# Mount the local scientist and ggen packages
+scientist_mount = modal.Mount.from_local_dir(
+    "scientist",
+    remote_path="/root/scientist",
+)
 
-
-def get_token_usage(lm: dspy.LM) -> Dict[str, Any]:
-    """Extract token usage statistics from DSPy LM history.
-
-    Args:
-        lm: The DSPy language model instance
-
-    Returns:
-        Dictionary with token counts and estimated cost
-    """
-    total_input_tokens = 0
-    total_output_tokens = 0
-    total_calls = 0
-
-    for entry in lm.history:
-        usage = entry.get("usage", {})
-        total_input_tokens += usage.get("prompt_tokens", 0) or usage.get(
-            "input_tokens", 0
-        )
-        total_output_tokens += usage.get("completion_tokens", 0) or usage.get(
-            "output_tokens", 0
-        )
-        total_calls += 1
-
-    total_tokens = total_input_tokens + total_output_tokens
-
-    # Estimate cost based on model (rough OpenAI GPT-4 pricing as default)
-    # GPT-4: ~$0.03/1K input, ~$0.06/1K output
-    # GPT-4-turbo: ~$0.01/1K input, ~$0.03/1K output
-    # These are estimates - actual cost depends on the model used
-    input_cost_per_1k = 0.01  # Conservative estimate
-    output_cost_per_1k = 0.03
-    estimated_cost = (total_input_tokens / 1000 * input_cost_per_1k) + (
-        total_output_tokens / 1000 * output_cost_per_1k
-    )
-
-    return {
-        "total_calls": total_calls,
-        "input_tokens": total_input_tokens,
-        "output_tokens": total_output_tokens,
-        "total_tokens": total_tokens,
-        "estimated_cost_usd": round(estimated_cost, 4),
-    }
+ggen_mount = modal.Mount.from_local_dir(
+    "../ggen/ggen",
+    remote_path="/root/ggen",
+)
 
 
-def main():
-    """Main execution function."""
+@app.function(
+    secrets=[modal.Secret.from_name("scientist-secrets")],
+    mounts=[scientist_mount, ggen_mount],
+    timeout=3600 * 6,  # 6 hour timeout for long-running discovery
+    cpu=4,
+    memory=8192,
+)
+def run_scientist():
+    """Run the AI Scientist for material discovery."""
+    import sys
+
+    sys.path.insert(0, "/root")  # For both scientist and ggen packages
+
+    import dspy
+    import mlflow
+
+    from scientist.core.config import ScientistConfig
+    from scientist.core.scientist import MaterialDiscoveryScientist
+    from scientist.utils.publisher import Publisher
+    from scientist.utils.logging import setup_logging, get_logger
+
+    # Initialize logging
+    setup_logging()
+    logger = get_logger("main")
+
     # Load configuration
     config = ScientistConfig.from_env()
 
-    # Configure MLflow
-    mlflow.dspy.autolog(
-        log_compiles=True,
-        log_evals=True,
-        log_traces_from_compile=True,
-        log_traces=True,
-    )
-    mlflow.set_tracking_uri(config.mlflow_tracking_uri)
-    mlflow.set_experiment(config.mlflow_experiment)
+    # Configure MLflow - use a remote tracking server or disable for Modal
+    # mlflow.set_tracking_uri(config.mlflow_tracking_uri)
+    # mlflow.set_experiment(config.mlflow_experiment)
 
     # Configure DSPy with LLM
     lm = dspy.LM(
@@ -102,16 +96,6 @@ def main():
 
     # Run discovery
     discovery = scientist(target_properties=config.default_targets)
-
-    # Capture token usage from DSPy
-    token_usage = get_token_usage(lm)
-    logger.info("=" * 70)
-    logger.info("TOKEN USAGE:")
-    logger.info(f"  Total LLM calls: {token_usage['total_calls']}")
-    logger.info(f"  Input tokens: {token_usage['input_tokens']:,}")
-    logger.info(f"  Output tokens: {token_usage['output_tokens']:,}")
-    logger.info(f"  Total tokens: {token_usage['total_tokens']:,}")
-    logger.info(f"  Estimated cost: ${token_usage['estimated_cost_usd']:.4f}")
 
     # Log results
     if discovery["best_material"]:
@@ -159,11 +143,21 @@ def main():
             discovery=discovery,
             targets=config.default_targets,
             post_id=initial_post_id,
-            token_usage=token_usage,
         )
     except Exception as e:
         logger.exception(f"Publishing to Ouro failed: {e}")
 
+    return discovery
 
-if __name__ == "__main__":
-    main()
+
+@app.local_entrypoint()
+def main():
+    """Local entrypoint to trigger the scientist run."""
+    print("Starting AI Scientist on Modal...")
+    result = run_scientist.remote()
+    print("Discovery complete!")
+    if result and result.get("best_material"):
+        best = result["best_material"]
+        print(f"\nBest material found: {best['composition']}")
+        print(f"Score: {best['score']:.3f}")
+    return result

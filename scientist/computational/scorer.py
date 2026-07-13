@@ -1,7 +1,11 @@
 """Material scoring and evaluation logic."""
 
 from typing import Dict, Any
+
 from ..data.models import Material, MaterialProperties
+from ..utils.logging import get_logger
+
+logger = get_logger("scorer")
 
 
 class MaterialScorer:
@@ -29,75 +33,104 @@ class MaterialScorer:
         properties: MaterialProperties,
         targets: Dict[str, Any],
     ) -> float:
-        """Calculate overall material score with correct directionality and clamping.
+        """Calculate overall material score.
+
+        Handles partial property evaluation gracefully - properties that are None
+        are skipped and the score is calculated from available properties with
+        adjusted weights.
 
         Args:
             material: The material being scored
-            properties: Computed properties of the material
+            properties: Computed properties (may have None values)
             targets: Target property values
 
         Returns:
             Score between 0.0 and 1.0, where 1.0 is perfect
         """
         score = 0.0
+        total_weight_used = 0.0
+        skipped = []
 
-        # Lower is better properties
-        if "num_atoms" in self.weights:
-            score += self._score_lower_is_better(
-                material.num_atoms,
-                targets.get("num_atoms_max"),
-                self.weights["num_atoms"],
+        # Lower is better
+        for prop, target_key in [
+            ("num_atoms", "num_atoms_max"),
+            ("e_hull", "e_hull_max"),
+            ("cost", "cost_max"),
+        ]:
+            if prop not in self.weights:
+                continue
+
+            value = (
+                getattr(material, prop, None)
+                if prop == "num_atoms"
+                else getattr(properties, prop, None)
             )
 
-        if "e_hull" in self.weights:
-            score += self._score_lower_is_better(
-                properties.e_hull, targets.get("e_hull_max"), self.weights["e_hull"]
-            )
-
-        if "cost" in self.weights:
-            score += self._score_lower_is_better(
-                properties.cost, targets.get("cost_max"), self.weights["cost"]
-            )
-
-        # Higher is better properties
-        if "magnetic_density" in self.weights:
-            score += self._score_higher_is_better(
-                properties.magnetic_density,
-                targets.get("magnetic_density_min"),
-                self.weights["magnetic_density"],
-            )
-
-        if "curie_temperature" in self.weights:
-            score += self._score_higher_is_better(
-                properties.curie_temperature,
-                targets.get("curie_temperature_min"),
-                self.weights["curie_temperature"],
-            )
-
-        # Boolean properties
-        if "dynamic_stability" in self.weights:
-            target_stability = targets.get("dynamic_stability", True)
-            if target_stability:
-                score += self.weights["dynamic_stability"] * (
-                    1.0 if properties.dynamic_stability else 0.0
+            if value is not None:
+                score += self._score_lower_is_better(
+                    value, targets.get(target_key), self.weights[prop]
                 )
+                total_weight_used += self.weights[prop]
+            else:
+                skipped.append(prop)
 
-        # Space group penalty (penalize low space group numbers like P1)
-        # Materials that relax to low-symmetry space groups (especially P1)
-        # are often undesirable even if other properties look good
+        # Higher is better
+        for prop, target_key in [
+            ("magnetic_density", "magnetic_density_min"),
+            ("magnetic_anisotropy_energy", "magnetic_anisotropy_energy_min"),
+            ("curie_temperature", "curie_temperature_min"),
+        ]:
+            if prop not in self.weights:
+                continue
+
+            value = getattr(properties, prop, None)
+
+            if value is not None:
+                score += self._score_higher_is_better(
+                    value, targets.get(target_key), self.weights[prop]
+                )
+                total_weight_used += self.weights[prop]
+            else:
+                skipped.append(prop)
+
+        # Boolean: dynamic stability
+        if "dynamic_stability" in self.weights:
+            if properties.dynamic_stability is not None:
+                target_stability = targets.get("dynamic_stability", True)
+                if target_stability:
+                    score += self.weights["dynamic_stability"] * (
+                        1.0 if properties.dynamic_stability else 0.0
+                    )
+                total_weight_used += self.weights["dynamic_stability"]
+            else:
+                skipped.append("dynamic_stability")
+
+        # Space group penalty
         if "space_group_penalty" in self.weights:
-            min_space_group = targets.get("min_space_group", 8)
+            min_sg = targets.get("min_space_group", 8)
             if material.resolved_space_group is not None:
-                if material.resolved_space_group < min_space_group:
-                    # Apply proportional penalty for low space group numbers
-                    # e.g., P1 (sg=1) with min=8 gets penalty_factor=0.125
-                    penalty_factor = material.resolved_space_group / min_space_group
+                if material.resolved_space_group < min_sg:
+                    penalty_factor = material.resolved_space_group / min_sg
                     score += self.weights["space_group_penalty"] * penalty_factor
                 else:
-                    # No penalty for acceptable space groups
                     score += self.weights["space_group_penalty"]
+                total_weight_used += self.weights["space_group_penalty"]
+            else:
+                skipped.append("space_group_penalty")
 
-        return max(0.0, min(1.0, score))
+        # Normalize
+        if total_weight_used > 0:
+            normalized_score = score / total_weight_used
+        else:
+            normalized_score = 0.0
+
+        if skipped:
+            logger.debug(
+                f"Skipped {len(skipped)} properties (None values), "
+                f"scored from {total_weight_used:.1%} of weight"
+            )
+
+        return max(0.0, min(1.0, normalized_score))
 
     def _score_lower_is_better(
         self, actual: float, target_max: Any, weight: float

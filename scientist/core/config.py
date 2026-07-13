@@ -13,14 +13,14 @@ class ScientistConfig:
     """Configuration for the AI Scientist system."""
 
     # LLM Configuration
-    llm_model: str = "openai/gpt-4.1-mini"  # gpt-4.1-mini for gpt-5
+    llm_model: str = "openai/gpt-5.2"  # gpt-4.1-mini for gpt-5
     llm_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     llm_max_tokens: int = 32000
-    llm_temperature: float = 0.5  # must be 1.0 for gpt-5.0
+    llm_temperature: float = 1.0  # must be 1.0 for gpt-5.0
     llm_cache: bool = False
 
     # Discovery Parameters
-    max_iterations: int = 3
+    max_iterations: int = 20
     early_stopping_threshold: float = 0.9
 
     # Ouro Configuration
@@ -40,6 +40,7 @@ class ScientistConfig:
             "e_hull": 0.18,
             "cost": 0.13,
             "magnetic_density": 0.18,
+            "magnetic_anisotropy_energy": 0.18,
             "curie_temperature": 0.18,
             "dynamic_stability": 0.13,
             "num_atoms": 0.1,
@@ -53,6 +54,7 @@ class ScientistConfig:
             "num_atoms_max": 30,
             "cost_max": 100,  # USD / kg
             "magnetic_density_min": 0.10,
+            "magnetic_anisotropy_energy_min": 1.5,  # mJ / m^3
             "curie_temperature_min": 500,  # K
             "e_hull_max": 0.150,  # eV / atom
             "dynamic_stability": True,
@@ -60,8 +62,17 @@ class ScientistConfig:
         }
     )
 
+    def __post_init__(self) -> None:
+        """Normalize scoring weights to sum to 1.0."""
+        total = sum(self.scoring_weights.values())
+        if total > 0:
+            self.scoring_weights = {
+                k: v / total for k, v in self.scoring_weights.items()
+            }
+
     def validate(self) -> None:
         """Validate configuration values."""
+
         if not self.llm_api_key:
             raise ValueError("OPENAI_API_KEY environment variable is required")
         if not self.ouro_api_key:

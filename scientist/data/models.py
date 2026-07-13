@@ -63,12 +63,37 @@ class Material:
 
 @dataclass
 class MaterialProperties:
-    """Key properties for bulk crystalline magnetic materials."""
+    """Key properties for bulk crystalline magnetic materials.
 
-    curie_temperature: float  # Tc in K
-    magnetic_density: float
-    cost: float  # Cost in USD / kg
-    e_hull: float  # Energy of hull in eV / atom
-    dynamic_stability: bool  # True or False
-    space_group: int  # Space group number
-    num_atoms: int  # Number of atoms
+    All properties are Optional to support partial evaluation results
+    when some property prediction routes fail.
+    """
+
+    curie_temperature: Optional[float] = None  # Tc in K
+    magnetic_density: Optional[float] = None
+    magnetic_anisotropy_energy: Optional[float] = (
+        None  # Magnetic anisotropy energy in mJ / m^3
+    )
+    cost: Optional[float] = None  # Cost in USD / kg
+    e_hull: Optional[float] = None  # Energy of hull in eV / atom
+    dynamic_stability: Optional[bool] = None  # True or False
+    space_group: Optional[int] = None  # Space group number
+    num_atoms: Optional[int] = None  # Number of atoms
+    # Track evaluation errors for transparency
+    evaluation_errors: Dict[str, str] = field(default_factory=dict)
+
+    def has_minimum_properties(self) -> bool:
+        """Check if we have enough properties to be useful for scoring."""
+        # Consider valid if we have at least 2 key properties
+        key_props = [
+            self.curie_temperature,
+            self.magnetic_density,
+            self.magnetic_anisotropy_energy,
+            self.e_hull,
+        ]
+        return sum(p is not None for p in key_props) >= 2
+
+    @property
+    def failed_evaluations(self) -> List[str]:
+        """Return list of properties that failed to evaluate."""
+        return list(self.evaluation_errors.keys())
