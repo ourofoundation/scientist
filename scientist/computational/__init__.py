@@ -6,6 +6,7 @@ from .scorer import MaterialScorer
 from .ouro_client import OuroClient
 from .registry import MaterialRegistry
 from .structure_generator import StructureGenerator
+from .explorer import SystemExplorer
 
 __all__ = [
     "ComputationalTools",
@@ -14,4 +15,5 @@ __all__ = [
     "OuroClient",
     "MaterialRegistry",
     "StructureGenerator",
+    "SystemExplorer",
 ]

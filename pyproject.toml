@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scientist"
-version = "0.1.0"
-description = "AI Scientist Agent for Rare-Earth-Free Permanent Magnet Discovery"
+version = "0.2.0"
+description = "AI Scientist for rare-earth-free permanent magnets via GGen chemical-system exploration"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 license = { file = "LICENSE" }
@@ -19,7 +19,7 @@ dependencies = [
     "pymatgen>=2024.12.1",
     "mlflow>=2.21.1",
     "pandas>=2.2.2",
-    "ggen @ file:///Users/mmoderwell/ouro/ggen",
+    "requests>=2.25.0",
 ]
 
 [project.scripts]

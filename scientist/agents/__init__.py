@@ -2,20 +2,14 @@
 
 from .signatures import (
     AnalyzeMagnetLandscape,
-    GenerateMagnetHypothesis,
-    DesignMaterialCandidate,
-    InterpretSimulationResults,
+    ProposeChemicalSystem,
+    InterpretExplorationResults,
     RefineHypothesis,
-    GenerateMutationOperations,
-    DecideGenerationMode,
 )
 
 __all__ = [
     "AnalyzeMagnetLandscape",
-    "GenerateMagnetHypothesis",
-    "DesignMaterialCandidate",
-    "InterpretSimulationResults",
+    "ProposeChemicalSystem",
+    "InterpretExplorationResults",
     "RefineHypothesis",
-    "GenerateMutationOperations",
-    "DecideGenerationMode",
 ]

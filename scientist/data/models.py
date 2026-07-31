@@ -3,24 +3,7 @@
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 from pymatgen.core.structure import Structure
-from datetime import datetime
 from uuid import uuid4
-
-
-@dataclass
-class MutationRecord:
-    """Records a single mutation operation and its effects."""
-
-    mutation_type: str  # e.g., "scale_lattice", "substitute", "jitter_sites"
-    parameters: Dict[str, Any]  # mutation parameters
-    timestamp: datetime
-    parent_composition: str
-    child_composition: str
-    property_changes: Dict[str, float] = field(
-        default_factory=dict
-    )  # change in properties
-    success: bool = True
-    error_message: Optional[str] = None
 
 
 @dataclass
@@ -30,22 +13,15 @@ class Material:
     composition: str  # e.g., "Fe16N2", "MnBi"
     atoms: Structure  # pymatgen structure
     cif_string: str  # CIF string
-    file: dict  # Ouro file
+    file: dict  # Ouro file (or local placeholder until uploaded)
     predicted_properties: Dict
     num_atoms: int
-    # Generation method tracking
-    generation_method: str = "from_scratch"  # "from_scratch", "mutation"
-    parent_material_id: Optional[str] = None  # ID of parent if mutation
-    mutation_history: List[MutationRecord] = field(default_factory=list)
-    # Ouro route call responses
+    generation_method: str = "exploration"  # "exploration" | "from_scratch"
+    chemical_system: Optional[str] = None  # e.g. "Fe-Co-Bi"
     artifacts: Optional[Dict[str, Dict]] = None
-    # Space group tracking
-    requested_space_group: Optional[int] = None  # proposed by the agent
-    used_space_group: Optional[int] = (
-        None  # passed to generator after compatibility check
-    )
-    resolved_space_group: Optional[int] = None  # determined from resulting structure
-    # Unique identifier for tracking lineage
+    requested_space_group: Optional[int] = None
+    used_space_group: Optional[int] = None
+    resolved_space_group: Optional[int] = None
     material_id: str = field(default_factory=lambda: f"mat_{uuid4()}")
 
     def to_json(self) -> Dict[str, Any]:
@@ -55,7 +31,7 @@ class Material:
             "composition": self.composition,
             "space_group": self.resolved_space_group,
             "generation_method": self.generation_method,
-            "parent_material_id": self.parent_material_id,
+            "chemical_system": self.chemical_system,
             "predicted_properties": self.predicted_properties,
             "cif_string": self.cif_string,
         }
@@ -75,16 +51,14 @@ class MaterialProperties:
         None  # Magnetic anisotropy energy in mJ / m^3
     )
     cost: Optional[float] = None  # Cost in USD / kg
-    e_hull: Optional[float] = None  # Energy of hull in eV / atom
+    e_hull: Optional[float] = None  # Energy above hull in eV / atom
     dynamic_stability: Optional[bool] = None  # True or False
     space_group: Optional[int] = None  # Space group number
     num_atoms: Optional[int] = None  # Number of atoms
-    # Track evaluation errors for transparency
     evaluation_errors: Dict[str, str] = field(default_factory=dict)
 
     def has_minimum_properties(self) -> bool:
         """Check if we have enough properties to be useful for scoring."""
-        # Consider valid if we have at least 2 key properties
         key_props = [
             self.curie_temperature,
             self.magnetic_density,
@@ -97,3 +71,35 @@ class MaterialProperties:
     def failed_evaluations(self) -> List[str]:
         """Return list of properties that failed to evaluate."""
         return list(self.evaluation_errors.keys())
+
+
+@dataclass
+class ExplorationSummary:
+    """Compact summary of a GGen chemical-system exploration for the LLM."""
+
+    chemical_system: str
+    num_candidates: int
+    num_successful: int
+    num_on_hull: int
+    num_near_hull: int
+    num_evaluated: int
+    crystal_system_counts: Dict[str, int]
+    best_candidates: List[Dict[str, Any]]  # formula, e_hull, sg, score if known
+    time_seconds: float = 0.0
+    hypothesis: str = ""
+    insights: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "chemical_system": self.chemical_system,
+            "num_candidates": self.num_candidates,
+            "num_successful": self.num_successful,
+            "num_on_hull": self.num_on_hull,
+            "num_near_hull": self.num_near_hull,
+            "num_evaluated": self.num_evaluated,
+            "crystal_system_counts": self.crystal_system_counts,
+            "best_candidates": self.best_candidates,
+            "time_seconds": self.time_seconds,
+            "hypothesis": self.hypothesis,
+            "insights": self.insights,
+        }

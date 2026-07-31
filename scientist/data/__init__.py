@@ -1,5 +1,5 @@
-"""Data models and structures."""
+"""Data models."""
 
-from .models import Material, MaterialProperties, MutationRecord
+from .models import Material, MaterialProperties, ExplorationSummary
 
-__all__ = ["Material", "MaterialProperties", "MutationRecord"]
+__all__ = ["Material", "MaterialProperties", "ExplorationSummary"]

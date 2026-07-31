@@ -10,20 +10,12 @@ from .core.scientist import MaterialDiscoveryScientist
 from .utils.publisher import Publisher
 from .utils.logging import setup_logging, get_logger
 
-# Initialize logging
 setup_logging()
 logger = get_logger("main")
 
 
 def get_token_usage(lm: dspy.LM) -> Dict[str, Any]:
-    """Extract token usage statistics from DSPy LM history.
-
-    Args:
-        lm: The DSPy language model instance
-
-    Returns:
-        Dictionary with token counts and estimated cost
-    """
+    """Extract token usage statistics from DSPy LM history."""
     total_input_tokens = 0
     total_output_tokens = 0
     total_calls = 0
@@ -39,15 +31,9 @@ def get_token_usage(lm: dspy.LM) -> Dict[str, Any]:
         total_calls += 1
 
     total_tokens = total_input_tokens + total_output_tokens
-
-    # Estimate cost based on model (rough OpenAI GPT-4 pricing as default)
-    # GPT-4: ~$0.03/1K input, ~$0.06/1K output
-    # GPT-4-turbo: ~$0.01/1K input, ~$0.03/1K output
-    # These are estimates - actual cost depends on the model used
-    input_cost_per_1k = 0.01  # Conservative estimate
-    output_cost_per_1k = 0.03
-    estimated_cost = (total_input_tokens / 1000 * input_cost_per_1k) + (
-        total_output_tokens / 1000 * output_cost_per_1k
+    # Rough GPT-4-class estimate; actual cost depends on model
+    estimated_cost = (total_input_tokens / 1000 * 0.01) + (
+        total_output_tokens / 1000 * 0.03
     )
 
     return {
@@ -61,10 +47,8 @@ def get_token_usage(lm: dspy.LM) -> Dict[str, Any]:
 
 def main():
     """Main execution function."""
-    # Load configuration
     config = ScientistConfig.from_env()
 
-    # Configure MLflow
     mlflow.dspy.autolog(
         log_compiles=True,
         log_evals=True,
@@ -74,7 +58,6 @@ def main():
     mlflow.set_tracking_uri(config.mlflow_tracking_uri)
     mlflow.set_experiment(config.mlflow_experiment)
 
-    # Configure DSPy with LLM
     lm = dspy.LM(
         config.llm_model,
         api_key=config.llm_api_key,
@@ -84,26 +67,21 @@ def main():
     )
     dspy.settings.configure(lm=lm)
 
-    # Create an initial Ouro post to parent downstream assets
     publisher = Publisher(config)
     initial_post = publisher.create_initial_post(targets=config.default_targets)
-
     initial_post_id = (
         initial_post.get("id")
         if isinstance(initial_post, dict)
         else getattr(initial_post, "id", None)
     )
 
-    # Initialize AI Scientist with post id for asset parenting
     scientist = MaterialDiscoveryScientist(config, post_id=initial_post_id)
 
     logger.info("Starting AI Scientist for Rare-Earth-Free Permanent Magnet Discovery")
     logger.info("=" * 70)
 
-    # Run discovery
     discovery = scientist(target_properties=config.default_targets)
 
-    # Capture token usage from DSPy
     token_usage = get_token_usage(lm)
     logger.info("=" * 70)
     logger.info("TOKEN USAGE:")
@@ -113,13 +91,13 @@ def main():
     logger.info(f"  Total tokens: {token_usage['total_tokens']:,}")
     logger.info(f"  Estimated cost: ${token_usage['estimated_cost_usd']:.4f}")
 
-    # Log results
     if discovery["best_material"]:
         best = discovery["best_material"]
         logger.info("=" * 70)
         logger.info("BEST DISCOVERY:")
         logger.info(f"Composition: {best['composition']}")
-        logger.info(f"Space Group: {best['space_group_used']}")
+        logger.info(f"Chemical system: {best.get('chemical_system')}")
+        logger.info(f"Space Group: {best.get('space_group_resolved') or best.get('space_group_used')}")
         logger.info(f"Hypothesis: {best['hypothesis']}")
         logger.info(f"Score: {best['score']:.3f}")
         logger.info("Predicted Properties:")
@@ -130,30 +108,17 @@ def main():
                 else f"  - {prop}: {value}"
             )
 
-        # Log mutation effectiveness statistics
         logger.info("=" * 70)
-        logger.info("MUTATION EFFECTIVENESS STATISTICS:")
-        try:
-            stats = scientist.tools.get_mutation_effectiveness_stats()
-            logger.info("Mutation details:")
-            if stats.get("num_operations"):
-                avg_ops = sum(stats["num_operations"]) / len(stats["num_operations"])
-                logger.info(f"  - Average operations per mutation set: {avg_ops:.1f}")
-            else:
-                logger.info("  - No successful mutations performed this run")
-            if "operation_types" in stats and stats["operation_types"]:
-                logger.info("  - Most common operation types:")
-                sorted_ops = sorted(
-                    stats["operation_types"].items(),
-                    key=lambda x: x[1],
-                    reverse=True,
-                )
-                for op_type, count in sorted_ops[:5]:
-                    logger.info(f"    * {op_type}: {count} times")
-        except Exception as e:
-            logger.exception(f"Could not retrieve mutation statistics: {e}")
+        logger.info("EXPLORATION SUMMARY:")
+        for system in discovery.get("explored_systems", []):
+            logger.info(f"  - {system}")
+        for exp in discovery.get("exploration_history", []):
+            logger.info(
+                f"  {exp['chemical_system']}: "
+                f"{exp['num_near_hull']} near-hull, "
+                f"{exp['num_evaluated']} evaluated"
+            )
 
-    # Publish run summary to Ouro
     try:
         publisher.publish_run_summary(
             discovery=discovery,

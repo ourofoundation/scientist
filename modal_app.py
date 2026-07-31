@@ -2,10 +2,8 @@
 
 import modal
 
-# Define the image with all dependencies
-# ggen requires: pyxtal, ase, orb-models, scipy
+# GGen runs remotely via Ouro-hosted routes — no local GPU/MLIP stack needed.
 image = modal.Image.debian_slim(python_version="3.11").pip_install(
-    # scientist dependencies
     "dspy-ai>=2.0.0",
     "numpy>=1.24",
     "openai>=1.0.0",
@@ -14,40 +12,29 @@ image = modal.Image.debian_slim(python_version="3.11").pip_install(
     "pymatgen>=2024.12.1",
     "mlflow>=2.21.1",
     "pandas>=2.2.2",
-    # ggen dependencies
-    "pyxtal>=0.5.0",
-    "ase>=3.22.0",
-    "orb-models>=0.1.0",
-    "scipy>=1.7.0",
     "requests>=2.25.0",
 )
 
 app = modal.App("scientist", image=image)
 
-# Mount the local scientist and ggen packages
 scientist_mount = modal.Mount.from_local_dir(
     "scientist",
     remote_path="/root/scientist",
 )
 
-ggen_mount = modal.Mount.from_local_dir(
-    "../ggen/ggen",
-    remote_path="/root/ggen",
-)
-
 
 @app.function(
     secrets=[modal.Secret.from_name("scientist-secrets")],
-    mounts=[scientist_mount, ggen_mount],
-    timeout=3600 * 6,  # 6 hour timeout for long-running discovery
-    cpu=4,
-    memory=8192,
+    mounts=[scientist_mount],
+    timeout=3600 * 12,  # hosted GGen explorations are long-running
+    cpu=2,
+    memory=4096,
 )
 def run_scientist():
     """Run the AI Scientist for material discovery."""
     import sys
 
-    sys.path.insert(0, "/root")  # For both scientist and ggen packages
+    sys.path.insert(0, "/root")
 
     import dspy
     import mlflow
@@ -103,7 +90,10 @@ def run_scientist():
         logger.info("=" * 70)
         logger.info("BEST DISCOVERY:")
         logger.info(f"Composition: {best['composition']}")
-        logger.info(f"Space Group: {best['space_group_used']}")
+        logger.info(f"Chemical system: {best.get('chemical_system')}")
+        logger.info(
+            f"Space Group: {best.get('space_group_resolved') or best.get('space_group_used')}"
+        )
         logger.info(f"Hypothesis: {best['hypothesis']}")
         logger.info(f"Score: {best['score']:.3f}")
         logger.info("Predicted Properties:")
@@ -114,28 +104,14 @@ def run_scientist():
                 else f"  - {prop}: {value}"
             )
 
-        # Log mutation effectiveness statistics
         logger.info("=" * 70)
-        logger.info("MUTATION EFFECTIVENESS STATISTICS:")
-        try:
-            stats = scientist.tools.get_mutation_effectiveness_stats()
-            logger.info("Mutation details:")
-            if stats.get("num_operations"):
-                avg_ops = sum(stats["num_operations"]) / len(stats["num_operations"])
-                logger.info(f"  - Average operations per mutation set: {avg_ops:.1f}")
-            else:
-                logger.info("  - No successful mutations performed this run")
-            if "operation_types" in stats and stats["operation_types"]:
-                logger.info("  - Most common operation types:")
-                sorted_ops = sorted(
-                    stats["operation_types"].items(),
-                    key=lambda x: x[1],
-                    reverse=True,
-                )
-                for op_type, count in sorted_ops[:5]:
-                    logger.info(f"    * {op_type}: {count} times")
-        except Exception as e:
-            logger.exception(f"Could not retrieve mutation statistics: {e}")
+        logger.info("EXPLORATION SUMMARY:")
+        for exp in discovery.get("exploration_history", []):
+            logger.info(
+                f"  {exp['chemical_system']}: "
+                f"{exp['num_near_hull']} near-hull, "
+                f"{exp['num_evaluated']} evaluated"
+            )
 
     # Publish run summary to Ouro
     try:

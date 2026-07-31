@@ -2,21 +2,18 @@
 
 import dspy
 import json
-from typing import List, Dict, Optional, Any, Tuple
-from dataclasses import dataclass, field
+from typing import List, Dict, Optional, Any
 
 from ..agents.signatures import (
     AnalyzeMagnetLandscape,
-    GenerateMagnetHypothesis,
-    DesignMaterialCandidate,
-    InterpretSimulationResults,
+    ProposeChemicalSystem,
+    InterpretExplorationResults,
     RefineHypothesis,
-    GenerateMutationOperations,
-    DecideGenerationMode,
 )
-from ..data.models import Material, MaterialProperties, MutationRecord
+from ..data.models import Material, MaterialProperties, ExplorationSummary
 from ..computational.tools import ComputationalTools
-from ..computational.evaluator import MaterialEvaluator
+from ..computational.evaluator import MaterialEvaluator, Interpretation
+from ..computational.explorer import SystemExplorer
 from ..computational.scorer import MaterialScorer
 from ..utils.logging import get_logger
 from .config import ScientistConfig
@@ -25,29 +22,25 @@ logger = get_logger("scientist")
 
 
 class MaterialDiscoveryScientist(dspy.Module):
-    """AI Scientist for discovering rare-earth-free permanent magnets."""
+    """AI Scientist for discovering rare-earth-free permanent magnets.
+
+    Loop:
+      1. LLM proposes a chemical system + constraints
+      2. Hosted GGen explores it in bulk (stoichiometries → MLIP-relaxed structures → hull)
+      3. Near-hull survivors are evaluated on Ouro for magnetic/cost properties
+      4. LLM interprets results and refines the next system proposal
+    """
 
     def __init__(self, config: ScientistConfig, post_id: Optional[str] = None):
-        """Initialize the AI Scientist.
-
-        Args:
-            config: Configuration object with all settings
-            post_id: Optional Ouro post ID for asset parenting
-        """
         super().__init__()
         self.config = config
         self.post_id = post_id
 
-        # Initialize DSPy modules
         self.analyze_landscape = dspy.ChainOfThought(AnalyzeMagnetLandscape)
-        self.generate_hypothesis = dspy.ChainOfThought(GenerateMagnetHypothesis)
-        self.design_material = dspy.Predict(DesignMaterialCandidate)
-        self.interpret_results = dspy.Predict(InterpretSimulationResults)
+        self.propose_system = dspy.ChainOfThought(ProposeChemicalSystem)
+        self.interpret_exploration = dspy.Predict(InterpretExplorationResults)
         self.refine_hypothesis = dspy.Predict(RefineHypothesis)
-        self.generate_mutation = dspy.ChainOfThought(GenerateMutationOperations)
-        self.decide_mode = dspy.ChainOfThought(DecideGenerationMode)
 
-        # Initialize computational tools
         self.tools = ComputationalTools(config, post_id=post_id)
         self.evaluator = MaterialEvaluator(
             ouro_client=self.tools.ouro_client,
@@ -55,413 +48,277 @@ class MaterialDiscoveryScientist(dspy.Module):
         )
         self.scorer = MaterialScorer(config.scoring_weights)
 
-        # Memory of discoveries and mutations
-        self.discovery_history = []
-        self.best_materials = []
-        self.mutation_success_rates = {}
-
-    @dataclass
-    class Operation:
-        """Represents a single mutation operation."""
-
-        op: str
-        params: Dict[str, Any] = field(default_factory=dict)
-
-    @dataclass
-    class ModeDecision:
-        """Represents a mode decision (new vs mutate)."""
-
-        decision: str
-        target_material_id: Optional[str]
-        rationale: str = ""
+        self.discovery_history: List[Dict] = []
+        self.best_materials: List[Dict] = []
+        self.exploration_history: List[ExplorationSummary] = []
+        self.explored_systems: List[str] = []
 
     def forward(self, target_properties: Dict) -> Dict:
-        """Main discovery loop.
-
-        Args:
-            target_properties: Target properties for materials
-
-        Returns:
-            Discovery results including best material and statistics
-        """
-        # Initial landscape analysis
+        """Main discovery loop over chemical systems."""
         landscape = self.analyze_landscape(
-            constraints="No rare-earth elements",
+            constraints="No rare-earth elements; synthesizable permanent magnets",
             target_properties=json.dumps(target_properties),
+            prior_explorations="none",
         )
-
         logger.info(f"Landscape analysis: {landscape.analysis}")
         logger.info(f"Promising directions: {landscape.promising_directions}")
 
-        # Track results across iterations
-        all_results = []
-        current_hypothesis = None
-        best_score = 0
-        current_best_material = None
+        all_results: List[Dict] = []
+        current_hypothesis: Optional[str] = None
+        best_score = 0.0
+        current_best: Optional[Dict] = None
 
         for iteration in range(self.config.max_iterations):
             result = self._run_iteration(
                 iteration=iteration,
                 target_properties=target_properties,
                 landscape=landscape,
-                all_results=all_results,
-                current_hypothesis=current_hypothesis,
-                current_best_material=current_best_material,
+                guiding_hypothesis=current_hypothesis,
             )
 
-            all_results.append(result["result"])
+            all_results.extend(result["candidate_results"])
             current_hypothesis = result["hypothesis"]
+            self.exploration_history.append(result["summary"])
+            self.explored_systems.append(result["chemical_system"])
 
-            if result["score"] > best_score:
-                best_score = result["score"]
-                current_best_material = result["material"]
-                self.best_materials.append(result["result"])
+            for cand in result["candidate_results"]:
+                if cand["score"] > best_score:
+                    best_score = cand["score"]
+                    current_best = cand
+                    self.best_materials.append(cand)
 
-            # Update mutation stats
-            self._update_mutation_stats(
-                result["material"], target_properties, result["score"]
-            )
+            self._log_iteration(result)
 
-            # Early stopping
-            if result["score"] > self.config.early_stopping_threshold:
-                logger.info(f"Excellent material found at iteration {iteration}!")
+            if best_score > self.config.early_stopping_threshold:
+                logger.info(
+                    f"Excellent material found at iteration {iteration} "
+                    f"(score={best_score:.3f})"
+                )
                 break
 
-            self._log_iteration_result(result["material"], result["score"], iteration)
+            # Refine hypothesis for next round
+            if iteration < self.config.max_iterations - 1:
+                current_hypothesis = self._refine_hypothesis(
+                    current_hypothesis, iteration + 1
+                )
 
-        return self._build_discovery_result(all_results)
+        return self._build_discovery_result(all_results, current_best)
 
     def _run_iteration(
         self,
         iteration: int,
         target_properties: Dict,
         landscape: Any,
-        all_results: List,
-        current_hypothesis: Optional[str],
-        current_best_material: Optional[Material],
+        guiding_hypothesis: Optional[str],
     ) -> Dict:
-        """Run a single discovery iteration.
-
-        Returns:
-            Dict with result, material, score, and hypothesis
-        """
-        # Decide generation mode
-        decision_output = self._decide_mode(
-            iteration, all_results, current_best_material, target_properties
-        )
-        mode_decision = self._to_mode_decision(decision_output)
-        mode = mode_decision.decision
-        target_material_id = mode_decision.target_material_id
-
-        logger.info(f"Iteration {iteration}: mode={mode}, target={target_material_id}")
-
-        # Plan mutations if needed
-        operations = []
-        strategy_output = decision_output
-        if mode == "mutate":
-            material = self.tools.material_registry.get(target_material_id)
-            logger.debug(f"Mutating: {material}")
-            mutation_history = self.tools.get_mutation_history_summary()
-            strategy_output = self.generate_mutation(
-                iteration=iteration,
-                material=material.to_json(),
-                target_properties=json.dumps(target_properties),
-                mutation_history=json.dumps(mutation_history),
-            )
-            operations = strategy_output.get("operations", [])
-
-        # Generate/refine hypothesis
-        if iteration == 0:
-            hypothesis_gen = self.generate_hypothesis(
-                previous_results=[],
-                landscape_analysis=landscape.analysis,
-                design_strategy=mode,
-            )
-            hypothesis = hypothesis_gen.hypothesis
-        else:
-            hypothesis = self._refine_current_hypothesis(
-                current_hypothesis, all_results[-1], iteration
-            )
-
-        # Generate material
-        material = self._generate_material(
-            mode, target_material_id, operations, hypothesis, current_best_material
+        """Propose → explore → evaluate → interpret one chemical system."""
+        proposal = self.propose_system(
+            landscape_analysis=landscape.analysis,
+            previous_explorations=json.dumps(
+                [s.to_dict() for s in self.exploration_history]
+            ),
+            guiding_hypothesis=guiding_hypothesis or "none",
+            target_properties=json.dumps(target_properties),
+            explored_systems=", ".join(self.explored_systems) or "none",
         )
 
-        # Evaluate and interpret
-        try:
-            material_props, interpretation = self._evaluate_and_interpret(
-                material, target_properties
-            )
-        except Exception as e:
-            logger.warning(f"Evaluation failed for {material.composition}: {e}")
-            material_props = MaterialProperties(
-                space_group=material.resolved_space_group,
-                num_atoms=material.num_atoms,
-                evaluation_errors={"complete_failure": str(e)},
-            )
-            material.predicted_properties = material_props.__dict__
-            interpretation = type(
-                "Interpretation", (), {"insights": f"Evaluation failed: {e}"}
-            )()
+        chemical_system = proposal.chemical_system.strip()
+        hypothesis = proposal.hypothesis
 
-        logger.debug(f"Properties: {material_props}")
-
-        if not material_props.has_minimum_properties():
-            logger.warning(f"Insufficient properties for {material.composition}")
-
-        # Score and record
-        score = self.scorer.calculate_score(material, material_props, target_properties)
-        result = self._record_result(
-            iteration,
-            material,
-            material_props,
-            interpretation,
-            hypothesis,
-            mode,
-            strategy_output,
-            score,
+        crystal_systems = SystemExplorer.parse_crystal_systems(
+            getattr(proposal, "crystal_systems", "all")
+        )
+        min_fraction = SystemExplorer.parse_fraction_json(
+            getattr(proposal, "min_fraction", "{}")
+        )
+        max_fraction = SystemExplorer.parse_fraction_json(
+            getattr(proposal, "max_fraction", "{}")
         )
 
-        if material_props.evaluation_errors:
-            result["evaluation_errors"] = material_props.evaluation_errors
+        logger.info(
+            f"Iteration {iteration}: exploring {chemical_system} "
+            f"(crystal_systems={crystal_systems or 'all'})"
+        )
+        logger.info(f"Hypothesis: {hypothesis}")
+
+        materials, summary = self.tools.explore_system(
+            chemical_system=chemical_system,
+            crystal_systems=crystal_systems,
+            min_fraction=min_fraction,
+            max_fraction=max_fraction,
+        )
+        summary.hypothesis = hypothesis
+
+        # Evaluate survivors on Ouro
+        candidate_results: List[Dict] = []
+        for material in materials:
+            try:
+                props = self.evaluator.evaluate_properties(material)
+            except Exception as e:
+                logger.warning(f"Evaluation failed for {material.composition}: {e}")
+                props = MaterialProperties(
+                    space_group=material.resolved_space_group,
+                    num_atoms=material.num_atoms,
+                    e_hull=(material.predicted_properties or {}).get("e_hull"),
+                    dynamic_stability=(material.predicted_properties or {}).get(
+                        "dynamic_stability"
+                    ),
+                    evaluation_errors={"complete_failure": str(e)},
+                )
+                material.predicted_properties = props.__dict__
+
+            score = self.scorer.calculate_score(material, props, target_properties)
+            candidate_results.append(
+                self._record_candidate(
+                    iteration=iteration,
+                    material=material,
+                    props=props,
+                    hypothesis=hypothesis,
+                    score=score,
+                    rationale=getattr(proposal, "rationale", ""),
+                )
+            )
+
+        # Interpret the exploration as a whole
+        interpretation = self._interpret(
+            chemical_system=chemical_system,
+            hypothesis=hypothesis,
+            summary=summary,
+            candidates=candidate_results,
+            targets=target_properties,
+        )
+        summary.insights = interpretation.insights
+
+        for cand in candidate_results:
+            cand["insights"] = interpretation.insights
+            cand["analysis"] = interpretation.analysis
 
         return {
-            "result": result,
-            "material": material,
-            "score": score,
+            "chemical_system": chemical_system,
             "hypothesis": hypothesis,
+            "summary": summary,
+            "candidate_results": candidate_results,
+            "interpretation": interpretation,
+            "rationale": getattr(proposal, "rationale", ""),
         }
 
-    def _to_mode_decision(self, decision_output: Any) -> ModeDecision:
-        """Validate and convert DecideGenerationMode output."""
-        decision = str(getattr(decision_output, "decision", "new")).lower()
-        if decision not in {"new", "mutate"}:
-            decision = "new"
-        tmid = getattr(decision_output, "target_material_id", None)
-        if not isinstance(tmid, str) or not tmid.strip():
-            tmid = None
-        rationale = getattr(decision_output, "rationale", "")
-        return self.ModeDecision(
-            decision=decision, target_material_id=tmid, rationale=rationale
-        )
-
-    def _decide_mode(
+    def _interpret(
         self,
-        iteration: int,
-        all_results: List,
-        current_best_material: Optional[Material],
-        target_properties: Dict,
-    ) -> Any:
-        """Call DecideGenerationMode with prepared context."""
-        available_materials = [
-            {
-                "id": r["material_id"],
-                "composition": r["composition"],
-                "score": r["score"],
-                "properties": r.get("properties", {}),
-                "is_current_best": (
-                    current_best_material is not None
-                    and r["material_id"] == current_best_material.material_id
+        chemical_system: str,
+        hypothesis: str,
+        summary: ExplorationSummary,
+        candidates: List[Dict],
+        targets: Dict,
+    ) -> Interpretation:
+        try:
+            result = self.interpret_exploration(
+                chemical_system=chemical_system,
+                hypothesis=hypothesis,
+                exploration_summary=json.dumps(summary.to_dict()),
+                evaluated_candidates=json.dumps(
+                    [
+                        {
+                            "composition": c["composition"],
+                            "score": c["score"],
+                            "properties": c["properties"],
+                            "space_group": c.get("space_group_resolved"),
+                        }
+                        for c in candidates
+                    ]
                 ),
-            }
-            for r in all_results
-        ]
+                target_properties=json.dumps(targets),
+            )
+            return Interpretation(
+                analysis=getattr(result, "analysis", ""),
+                insights=getattr(result, "insights", ""),
+            )
+        except Exception as e:
+            logger.warning(f"Interpretation failed: {e}")
+            return Interpretation(
+                analysis=f"Interpretation failed: {e}",
+                insights=f"Explored {chemical_system}; {len(candidates)} evaluated.",
+            )
 
-        current_material_desc = (
-            f"{current_best_material.composition} with properties "
-            f"{current_best_material.predicted_properties}"
-            if current_best_material
-            else "none"
-        )
-
-        return self.decide_mode(
-            iteration=iteration,
-            current_material=current_material_desc,
-            target_properties=json.dumps(target_properties),
-            mutation_history=json.dumps(self.tools.get_mutation_history_summary()),
-            available_materials=json.dumps(available_materials),
-        )
-
-    def _refine_current_hypothesis(
-        self, current_hypothesis: str, last_result: Dict, iteration: int
+    def _refine_hypothesis(
+        self, current_hypothesis: Optional[str], iteration: int
     ) -> str:
-        """Refine hypothesis based on last result."""
+        if not current_hypothesis:
+            return ""
+        top = sorted(self.best_materials, key=lambda r: r["score"], reverse=True)[:5]
         refinement = self.refine_hypothesis(
             original_hypothesis=current_hypothesis,
-            results=json.dumps(
-                {
-                    **last_result["properties"],
-                    "space_group_requested": last_result.get("space_group_requested"),
-                    "space_group_used": last_result.get("space_group_used"),
-                    "space_group_resolved": last_result.get("space_group_resolved"),
-                }
+            exploration_history=json.dumps(
+                [s.to_dict() for s in self.exploration_history]
             ),
-            insights=last_result["insights"],
+            best_results=json.dumps(
+                [
+                    {
+                        "composition": r["composition"],
+                        "score": r["score"],
+                        "chemical_system": r.get("chemical_system"),
+                        "properties": r.get("properties"),
+                    }
+                    for r in top
+                ]
+            ),
             iteration=str(iteration),
-            mutation_history=json.dumps(self.tools.get_mutation_history_summary()),
         )
         return refinement.refined_hypothesis
 
-    def _generate_material(
-        self,
-        mode: str,
-        target_material_id: Optional[str],
-        operations: List[Dict[str, Any]],
-        current_hypothesis: str,
-        current_best_material: Optional[Material],
-    ) -> Material:
-        """Generate material based on mode and parameters."""
-        if mode == "mutate" and target_material_id:
-            target_material = self.tools.material_registry.get(target_material_id)
-            if target_material is None:
-                logger.warning(
-                    f"Target {target_material_id} not found, using new generation"
-                )
-            else:
-                logger.info(
-                    f"Mutating {target_material.composition} with {len(operations)} ops"
-                )
-                if not operations:
-                    logger.debug("No operations provided, using default jitter")
-                    operations = [{"op": "jitter_sites", "sigma": 0.01}]
-                return self.tools.mutate_material(target_material, operations)
-
-        # New generation
-        material_design = self.design_material(
-            hypothesis=current_hypothesis,
-            constraints="No rare earths, synthesizable via standard methods, less than 20 atoms",
-            compatible_space_groups=[],
-        )
-
-        compatible_sgs = self.tools.get_compatible_space_groups(
-            material_design.composition
-        )
-
-        material_design = self.design_material(
-            hypothesis=current_hypothesis,
-            constraints="No rare earths, synthesizable via standard methods, less than 20 atoms",
-            compatible_space_groups=compatible_sgs[:20],
-        )
-
-        logger.debug(
-            f"Design: {material_design.composition} SG {material_design.space_group}"
-        )
-
-        return self.tools.generate_structure(
-            composition=material_design.composition,
-            space_group=material_design.space_group,
-        )
-
-    def _evaluate_and_interpret(
-        self, material: Material, targets: Dict
-    ) -> Tuple[MaterialProperties, Any]:
-        """Evaluate material properties and interpret results."""
-        material_props = self.evaluator.evaluate_properties(material)
-        material.predicted_properties = material_props.__dict__
-
-        interpretation = self.evaluator.interpret_results(
-            material, material_props, targets, self.interpret_results
-        )
-        return material_props, interpretation
-
-    def _record_result(
+    def _record_candidate(
         self,
         iteration: int,
         material: Material,
-        material_props: MaterialProperties,
-        interpretation: Any,
+        props: MaterialProperties,
         hypothesis: str,
-        mode: str,
-        strategy_output: Any,
         score: float,
+        rationale: str,
     ) -> Dict:
-        """Record a discovery result."""
-        rationale = getattr(strategy_output, "rationale", "N/A")
         return {
             "iteration": iteration,
             "hypothesis": hypothesis,
             "composition": material.composition,
+            "chemical_system": material.chemical_system,
             "num_atoms": material.num_atoms,
             "space_group_requested": material.requested_space_group,
             "space_group_used": material.used_space_group,
             "space_group_resolved": material.resolved_space_group,
             "generation_method": material.generation_method,
-            "parent_material_id": material.parent_material_id,
-            "mutation_history": [m.__dict__ for m in material.mutation_history],
             "structure_file": material.file,
             "artifacts": material.artifacts,
-            "properties": material_props.__dict__,
-            "insights": interpretation.insights,
+            "properties": props.__dict__,
             "score": score,
             "material_id": material.material_id,
-            "strategy_mode": mode,
             "strategy_rationale": rationale,
+            "insights": "",
+            "analysis": "",
         }
 
-    def _update_mutation_stats(
-        self, material: Material, targets: Dict, score: float
-    ) -> None:
-        """Update mutation success statistics."""
-        if material.generation_method != "mutation" or not material.mutation_history:
-            return
-
-        last_mutation = material.mutation_history[-1]
-        if material.parent_material_id not in self.tools.material_registry:
-            return
-
-        parent = self.tools.material_registry[material.parent_material_id]
-        if not parent.predicted_properties:
-            parent_props = self.tools.evaluate_material_properties(parent)
-            parent.predicted_properties = parent_props.__dict__
-        else:
-            parent_props = MaterialProperties(**parent.predicted_properties)
-
-        parent_score = self.scorer.calculate_score(parent, parent_props, targets)
-
-        if last_mutation.property_changes is None:
-            last_mutation.property_changes = {}
-        last_mutation.property_changes["score_change"] = score - parent_score
-
-        mutation_type = last_mutation.mutation_type
-        if mutation_type not in self.mutation_success_rates:
-            self.mutation_success_rates[mutation_type] = {"successes": 0, "total": 0}
-
-        self.mutation_success_rates[mutation_type]["total"] += 1
-        if score > parent_score:
-            self.mutation_success_rates[mutation_type]["successes"] += 1
-
-    def _log_iteration_result(
-        self, material: Material, score: float, iteration: int
-    ) -> None:
-        """Log iteration result."""
-        suffix = (
-            f" (mutated from {material.parent_material_id})"
-            if material.generation_method == "mutation"
-            else ""
-        )
+    def _log_iteration(self, result: Dict) -> None:
+        system = result["chemical_system"]
+        summary: ExplorationSummary = result["summary"]
+        candidates = result["candidate_results"]
+        best = max((c["score"] for c in candidates), default=0.0)
         logger.info(
-            f"Iter {iteration}: {material.composition} - Score: {score:.3f}{suffix}"
+            f"{system}: {summary.num_near_hull} near-hull → "
+            f"{len(candidates)} evaluated, best score={best:.3f}"
         )
+        for c in sorted(candidates, key=lambda x: x["score"], reverse=True)[:3]:
+            logger.info(
+                f"  {c['composition']} SG={c.get('space_group_resolved')} "
+                f"score={c['score']:.3f}"
+            )
         logger.info("-" * 70)
 
-    def _build_discovery_result(self, all_results: List) -> Dict:
-        """Build final discovery result dictionary."""
-        mutation_summary = {}
-        for mutation_type, stats in self.mutation_success_rates.items():
-            success_rate = (
-                stats["successes"] / stats["total"] if stats["total"] > 0 else 0
-            )
-            mutation_summary[mutation_type] = {
-                "success_rate": success_rate,
-                "total_attempts": stats["total"],
-            }
-
+    def _build_discovery_result(
+        self, all_results: List[Dict], current_best: Optional[Dict]
+    ) -> Dict:
         return {
-            "best_material": self.best_materials[-1] if self.best_materials else None,
+            "best_material": current_best or (
+                self.best_materials[-1] if self.best_materials else None
+            ),
             "all_results": all_results,
-            "iterations_run": len(all_results),
-            "mutation_summary": mutation_summary,
-            "mutation_history": self.tools.get_mutation_history_summary(),
-            "trajectory_visualization": self.tools.get_trajectory_visualization(),
+            "iterations_run": len(self.exploration_history),
+            "exploration_history": [s.to_dict() for s in self.exploration_history],
+            "explored_systems": list(self.explored_systems),
         }
