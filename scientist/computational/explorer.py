@@ -82,7 +82,7 @@ class SystemExplorer:
             crystal_systems=crystal_systems,
             min_fraction=min_fraction,
             max_fraction=max_fraction,
-            skip_existing=True,
+            skip_existing=False,
             poll_timeout=self.poll_timeout,
         )
 

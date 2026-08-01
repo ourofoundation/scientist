@@ -67,7 +67,7 @@ class OuroClient:
         crystal_systems: Optional[List[str]] = None,
         min_fraction: Optional[Dict[str, float]] = None,
         max_fraction: Optional[Dict[str, float]] = None,
-        skip_existing: bool = True,
+        skip_existing: bool = False,
         require_all_elements: bool = False,
         include_phase_diagram: bool = True,
         poll_timeout: int = 60 * 60 * 4,
