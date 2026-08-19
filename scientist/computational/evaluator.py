@@ -57,7 +57,7 @@ TIER2_ROUTES = {
             "scf_thr": 0.000001,
             "kspacing": 0.16,
             "scf_nmax": 200,
-            "smearing_sigma": 0.05,
+            "smearing_sigma_ev": 0.05,
             "smearing_method": "mp",
         },
     },
