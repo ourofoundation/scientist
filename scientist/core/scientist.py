@@ -69,12 +69,18 @@ class MaterialDiscoveryScientist(dspy.Module):
         current_best: Optional[Dict] = None
 
         for iteration in range(self.config.max_iterations):
-            result = self._run_iteration(
-                iteration=iteration,
-                target_properties=target_properties,
-                landscape=landscape,
-                guiding_hypothesis=current_hypothesis,
-            )
+            try:
+                result = self._run_iteration(
+                    iteration=iteration,
+                    target_properties=target_properties,
+                    landscape=landscape,
+                    guiding_hypothesis=current_hypothesis,
+                )
+            except Exception:
+                logger.exception(
+                    f"Iteration {iteration} failed; continuing to the next system"
+                )
+                continue
 
             all_results.extend(result["candidate_results"])
             current_hypothesis = result["hypothesis"]
@@ -96,11 +102,13 @@ class MaterialDiscoveryScientist(dspy.Module):
                 )
                 break
 
-            # Refine hypothesis for next round
             if iteration < self.config.max_iterations - 1:
-                current_hypothesis = self._refine_hypothesis(
-                    current_hypothesis, iteration + 1
-                )
+                try:
+                    current_hypothesis = self._refine_hypothesis(
+                        current_hypothesis, iteration + 1
+                    )
+                except Exception as e:
+                    logger.warning(f"Hypothesis refinement failed: {e}")
 
         return self._build_discovery_result(all_results, current_best)
 

@@ -1,61 +1,66 @@
-"""Modal app for running the AI Scientist in the cloud."""
+"""Modal app for running the AI Scientist on a schedule.
+
+Deploy (schedules only fire after deploy, not serve):
+
+    MODAL_PROFILE=ouro-users modal deploy modal_app.py
+
+Manual run:
+
+    MODAL_PROFILE=ouro-users modal run modal_app.py
+"""
 
 import modal
 
 # GGen runs remotely via Ouro-hosted routes — no local GPU/MLIP stack needed.
-image = modal.Image.debian_slim(python_version="3.11").pip_install(
-    "dspy-ai>=2.0.0",
-    "numpy>=1.24",
-    "openai>=1.0.0",
-    "python-dotenv>=1.0.0",
-    "ouro-py>=0.3.13",
-    "pymatgen>=2024.12.1",
-    "mlflow>=2.21.1",
-    "pandas>=2.2.2",
-    "requests>=2.25.0",
+# ouro-py>=0.11 is required for wait=False / poll_action on long explore jobs.
+image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .pip_install(
+        "dspy-ai>=2.0.0",
+        "numpy>=1.24",
+        "openai>=1.0.0",
+        "python-dotenv>=1.0.0",
+        "ouro-py>=0.11.0",
+        "pymatgen>=2024.12.1",
+        "mlflow>=2.21.1",
+        "pandas>=2.2.2",
+        "requests>=2.25.0",
+    )
+    .add_local_dir("scientist", remote_path="/root/scientist")
 )
 
 app = modal.App("scientist", image=image)
 
-scientist_mount = modal.Mount.from_local_dir(
-    "scientist",
-    remote_path="/root/scientist",
-)
+# Daily at 06:00 UTC. max_containers=1 so a long GGen run cannot overlap the next.
+SCHEDULE = modal.Cron("0 6 * * *")
 
 
 @app.function(
     secrets=[modal.Secret.from_name("scientist-secrets")],
-    mounts=[scientist_mount],
-    timeout=3600 * 12,  # hosted GGen explorations are long-running
+    timeout=60 * 60 * 24,
     cpu=2,
     memory=4096,
+    max_containers=1,
+    schedule=SCHEDULE,
 )
 def run_scientist():
-    """Run the AI Scientist for material discovery."""
+    """Run one discovery loop and publish the summary to Ouro."""
     import sys
 
     sys.path.insert(0, "/root")
 
     import dspy
-    import mlflow
 
     from scientist.core.config import ScientistConfig
     from scientist.core.scientist import MaterialDiscoveryScientist
     from scientist.utils.publisher import Publisher
     from scientist.utils.logging import setup_logging, get_logger
 
-    # Initialize logging
     setup_logging()
     logger = get_logger("main")
 
-    # Load configuration
     config = ScientistConfig.from_env()
 
-    # Configure MLflow - use a remote tracking server or disable for Modal
-    # mlflow.set_tracking_uri(config.mlflow_tracking_uri)
-    # mlflow.set_experiment(config.mlflow_experiment)
-
-    # Configure DSPy with LLM
     lm = dspy.LM(
         config.llm_model,
         api_key=config.llm_api_key,
@@ -65,28 +70,23 @@ def run_scientist():
     )
     dspy.settings.configure(lm=lm)
 
-    # Create an initial Ouro post to parent downstream assets
     publisher = Publisher(config)
     initial_post = publisher.create_initial_post(targets=config.default_targets)
-
     initial_post_id = (
         initial_post.get("id")
         if isinstance(initial_post, dict)
         else getattr(initial_post, "id", None)
     )
 
-    # Initialize AI Scientist with post id for asset parenting
     scientist = MaterialDiscoveryScientist(config, post_id=initial_post_id)
 
     logger.info("Starting AI Scientist for Rare-Earth-Free Permanent Magnet Discovery")
     logger.info("=" * 70)
 
-    # Run discovery
     discovery = scientist(target_properties=config.default_targets)
 
-    # Log results
-    if discovery["best_material"]:
-        best = discovery["best_material"]
+    best = discovery.get("best_material")
+    if best:
         logger.info("=" * 70)
         logger.info("BEST DISCOVERY:")
         logger.info(f"Composition: {best['composition']}")
@@ -113,7 +113,6 @@ def run_scientist():
                 f"{exp['num_evaluated']} evaluated"
             )
 
-    # Publish run summary to Ouro
     try:
         publisher.publish_run_summary(
             discovery=discovery,
@@ -123,17 +122,34 @@ def run_scientist():
     except Exception as e:
         logger.exception(f"Publishing to Ouro failed: {e}")
 
-    return discovery
+    return {
+        "post_id": initial_post_id,
+        "iterations_run": discovery.get("iterations_run"),
+        "explored_systems": discovery.get("explored_systems"),
+        "n_candidates": len(discovery.get("all_results") or []),
+        "best": (
+            {
+                "composition": best["composition"],
+                "chemical_system": best.get("chemical_system"),
+                "score": best["score"],
+            }
+            if best
+            else None
+        ),
+    }
 
 
 @app.local_entrypoint()
 def main():
-    """Local entrypoint to trigger the scientist run."""
+    """Trigger one scientist run without waiting for the cron."""
     print("Starting AI Scientist on Modal...")
     result = run_scientist.remote()
     print("Discovery complete!")
-    if result and result.get("best_material"):
-        best = result["best_material"]
+    if result and result.get("best"):
+        best = result["best"]
         print(f"\nBest material found: {best['composition']}")
         print(f"Score: {best['score']:.3f}")
+    elif result:
+        print("No best material this run.")
+        print(f"Systems explored: {result.get('explored_systems')}")
     return result
