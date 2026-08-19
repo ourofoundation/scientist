@@ -250,9 +250,8 @@ class SystemExplorer:
             )
             file_dict = uploaded.model_dump(mode="json")
         except Exception as e:
-            logger.warning(f"Upload failed for {formula}, using placeholder: {e}")
+            logger.warning(f"Upload failed for {formula}; eval will retry: {e}")
             file_dict = {
-                "id": f"ggen_{formula}",
                 "name": formula,
                 "description": f"GGen-explored {formula}",
             }

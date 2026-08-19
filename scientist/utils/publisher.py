@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Dict, Optional, List, Any, TYPE_CHECKING
+from uuid import UUID
 
 from ouro import Ouro
 import pandas as pd
@@ -13,6 +14,15 @@ if TYPE_CHECKING:
     from ouro.posts import Editor
 
 logger = get_logger("publisher")
+
+
+def _valid_uuid(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        return str(UUID(str(value)))
+    except (ValueError, TypeError, AttributeError):
+        return None
 
 
 class Publisher:
@@ -174,11 +184,7 @@ class Publisher:
         ]
         editor.new_table(pd.DataFrame(summary_data, columns=["Property", "Value"]))
 
-        if structure_asset and structure_asset.get("id"):
-            editor.new_header(level=2, text="Structure")
-            editor.new_inline_asset(
-                id=structure_asset["id"], asset_type="file", view_mode="preview"
-            )
+        self._embed_structure(editor, best, structure_asset)
 
         properties: Dict = best.get("properties", {})
         if properties:
@@ -237,6 +243,40 @@ class Publisher:
             self._add_token_usage_section(editor, token_usage)
 
         return editor
+
+    def _embed_structure(
+        self,
+        editor: "Editor",
+        best: Dict,
+        structure_asset: Optional[Dict],
+    ) -> None:
+        file_id = _valid_uuid(structure_asset.get("id") if structure_asset else None)
+        cif_string = best.get("cif_string")
+        composition = best.get("composition") or "structure"
+
+        if file_id:
+            editor.new_header(level=2, text="Structure")
+            editor.new_inline_asset(
+                id=file_id, asset_type="file", view_mode="preview"
+            )
+            return
+
+        if not cif_string:
+            logger.warning("Skipping structure embed: no Ouro file id or CIF")
+            return
+
+        try:
+            editor.new_header(level=2, text="Structure")
+            partial = self.ouro.files.partial_from_bytes(
+                cif_string.encode("utf-8"),
+                f"{composition}.cif",
+                name=composition,
+                description=f"GGen-explored {composition}",
+                content_type="text/cif",
+            )
+            editor.new_partial_asset(partial, view_mode="preview")
+        except Exception as e:
+            logger.warning(f"Failed to embed CIF as partial asset: {e}")
 
     def _add_token_usage_section(self, editor: "Editor", token_usage: Dict) -> None:
         editor.new_header(level=2, text="LLM Usage & Cost")

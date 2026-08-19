@@ -10,6 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, Tuple, List
+from uuid import UUID
 
 from ..data.models import Material, MaterialProperties
 from ..utils.logging import get_logger
@@ -109,6 +110,16 @@ class Tier2Thresholds:
 
 
 DEFAULT_TIER2_THRESHOLDS = Tier2Thresholds()
+
+
+def _is_uuid(value: Any) -> bool:
+    if value is None:
+        return False
+    try:
+        UUID(str(value))
+        return True
+    except (ValueError, TypeError, AttributeError):
+        return False
 
 
 @dataclass
@@ -232,25 +243,27 @@ class MaterialEvaluator:
 
     def _ensure_ouro_file(self, material: Material) -> Optional[str]:
         if not isinstance(material.file, dict):
+            material.file = {}
+
+        file_id = material.file.get("id")
+        if _is_uuid(file_id):
+            return str(file_id)
+
+        if not material.cif_string:
             return None
 
-        file_id = material.file.get("id", "")
-
-        if file_id.startswith("ggen_"):
-            logger.debug("Uploading GGen structure to Ouro")
-            try:
-                name = self._generate_filename(material)
-                description = self._generate_description(material)
-                uploaded = self.ouro.upload_cif_content(
-                    material.cif_string, name, description
-                )
-                material.file = uploaded.model_dump(mode="json")
-                return uploaded.id
-            except Exception as e:
-                logger.error(f"Failed to upload structure: {e}")
-                raise
-
-        return file_id if file_id else None
+        logger.debug("Uploading structure to Ouro")
+        try:
+            name = self._generate_filename(material)
+            description = self._generate_description(material)
+            uploaded = self.ouro.upload_cif_content(
+                material.cif_string, name, description
+            )
+            material.file = uploaded.model_dump(mode="json")
+            return str(uploaded.id)
+        except Exception as e:
+            logger.error(f"Failed to upload structure: {e}")
+            raise
 
     def _execute_routes(
         self,

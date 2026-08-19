@@ -180,6 +180,7 @@ def main() -> None:
                 "space_group_resolved": material.resolved_space_group,
                 "generation_method": material.generation_method,
                 "structure_file": material.file,
+                "cif_string": material.cif_string,
                 "artifacts": material.artifacts,
                 "properties": props.__dict__,
                 "score": score,
