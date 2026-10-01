@@ -26,6 +26,8 @@ def run_campaign(
     from .utils.report import Reporter
 
     config = config or ScientistConfig.from_env()
+    if config.sim:
+        return _run_simulated(goal, campaign, config)
     llm = LLM(config)
     store = Store(config.db_path)
     ouro = OuroClient(
@@ -82,6 +84,49 @@ def run_campaign(
     return result
 
 
+def _run_simulated(
+    goal: str, campaign: Optional[str], config: ScientistConfig, oracle: bool = False
+) -> Dict[str, Any]:
+    """The same search against the simulated world; nothing is sent to Ouro."""
+    from .computational.sim import SimEvaluator, SimExplorer, SimWorld
+    from .core.search import campaign_key
+
+    world = SimWorld(config.sim_seed, failure_rate=config.sim_failure_rate)
+    explorer = SimExplorer(
+        world,
+        max_atoms=config.ggen_max_atoms,
+        num_trials=config.ggen_num_trials,
+        e_hull_cutoff=config.ggen_e_hull_cutoff,
+        max_candidates=config.max_candidates_stored,
+    )
+    llm = LLM(config)
+    store = Store(config.db_path)
+    search = Search(config, llm, store, explorer, SimEvaluator(world), meter=world)
+    logger.info(
+        f"Simulated world (seed {config.sim_seed}), model {config.llm_model}, "
+        f"memory {config.db_path}"
+    )
+
+    record = search.open_campaign(goal, campaign or f"sim-{campaign_key(goal)}")
+    run_id = store.start_run(record["id"])
+    result = search.run(record["id"], run_id)
+    _log_result(result)
+
+    if oracle:
+        objective = ObjectiveSpec.model_validate(result["campaign"]["objective"])
+        found = result["best_candidate"]["score"] if result["best_candidate"] else 0.0
+        logger.info("Best possible in this world (up to 3 elements):")
+        for entry in world.oracle(objective):
+            logger.info(
+                f"  {entry['formula']} [{entry['system']}] score "
+                f"{entry['score']:.3f} {entry['properties']}"
+            )
+            result.setdefault("oracle", []).append(entry)
+        logger.info(f"Found {found:.3f} of {result['oracle'][0]['score']:.3f}")
+    store.close()
+    return result
+
+
 def _log_result(result: Dict[str, Any]) -> None:
     campaign, best, usage = (
         result["campaign"],
@@ -93,6 +138,8 @@ def _log_result(result: Dict[str, Any]) -> None:
         f"Run complete: {len(result['nodes'])} steps "
         f"({campaign['steps_done']} in campaign), post {result.get('post_id')}"
     )
+    verdict = result.get("verdict") or {}
+    logger.info(f"Goal: {verdict.get('status', 'unknown').replace('_', ' ')}")
     if best:
         logger.info(
             f"Best candidate: {best['formula']} [{best['system']}] "
@@ -141,17 +188,40 @@ def main() -> None:
     parser.add_argument(
         "--list", action="store_true", help="list campaigns in memory and exit"
     )
+    parser.add_argument("--model", help="OpenRouter model id for this run")
+    parser.add_argument(
+        "--sim",
+        action="store_true",
+        help="run against the simulated world: instant, free calculations, a "
+        "cheap model, separate memory, nothing sent to Ouro",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=0, help="which simulated world (with --sim)"
+    )
+    parser.add_argument(
+        "--oracle",
+        action="store_true",
+        help="with --sim, also report the best result the world contains",
+    )
     args = parser.parse_args()
 
     setup_logging()
     if args.list:
-        _list_campaigns(ScientistConfig())
+        config = ScientistConfig()
+        if args.sim:
+            config.use_sim(args.seed)
+        _list_campaigns(config)
         return
 
-    config = ScientistConfig.from_env()
+    config = ScientistConfig.from_env(sim=args.sim, sim_seed=args.seed)
     if args.steps:
         config.max_steps = args.steps
-    run_campaign(args.goal, args.campaign, config)
+    if args.model:
+        config.llm_model = args.model
+    if args.sim:
+        _run_simulated(args.goal, args.campaign, config, oracle=args.oracle)
+    else:
+        run_campaign(args.goal, args.campaign, config)
 
 
 if __name__ == "__main__":

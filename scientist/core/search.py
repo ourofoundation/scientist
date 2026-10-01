@@ -1,9 +1,11 @@
 """Annealing search over materials, with an LLM as the proposal distribution.
 
-The harness owns control flow: budget, temperature, move selection, acceptance.
-The LLM is called for bounded decisions — propose moves from the current
-position, triage which candidates deserve a calculation, reflect on what a
-step taught us. Every step becomes a node in a persisted tree, so the path
+The harness owns control flow: budget, temperature, move selection, and the
+verdict on whether the goal is met. The LLM is called for bounded decisions —
+propose moves from the best position so far, triage which candidates deserve a
+calculation, reflect on what a step taught us. After every step the harness
+judges the goal from the measurements and feeds what is still missing into the
+next proposal. Every step becomes a node in a persisted tree, so the path
 travelled is context for the next step and for the next run.
 """
 
@@ -140,31 +142,40 @@ SEARCH_SYSTEM = """You are the scientific intuition inside a materials search.
 The search works like simulated annealing. A position is a node: a chemical
 system that was explored, the candidate structures found there, and what was
 measured on them. At each step you propose several possible next moves from
-what is known; a harness picks one, runs the calculations, and decides whether
-the search moves to the new position. You are not running a to-do list — you
-are estimating, from chemistry and physics and from everything this search has
-already measured, which direction improves the objective.
+what is known; a harness picks one and runs the calculations. You are not
+running a to-do list — you are estimating, from chemistry and physics and from
+everything this search has already measured, which direction improves the
+objective.
 
-How the harness uses your proposals:
+How the harness works:
 - It picks among your moves with probability proportional to
   exp(predicted_score / T). At high temperature bold moves get real chances;
   at low temperature it takes your best estimate. So make predicted_score
   honest rather than optimistic: after each step your prediction is compared
   with the measured result, and that record is shown back to you.
-- It accepts a worse result with probability exp(score_change / T), so the
-  search can leave a local optimum early on and settles later.
+- A score counts only what has been measured: an unmeasured criterion earns
+  nothing. Where a candidate is partly measured, the record also shows the
+  score it could reach if everything still unmeasured came out perfectly.
+- The search always continues from the best node so far. The temperature
+  falls over the run's steps and acts only through which move is picked.
+- After every step the harness judges the goal from the measurements and
+  tells you what is still missing, under "Where the goal stands". Aim your
+  moves at that gap. The run ends when a candidate has every criterion
+  measured and meets every target, or when the steps run out.
 
 Propose moves that differ meaningfully: span local refinements of the current
 position through bolder jumps, in proportion to the temperature. A move may
-branch from any earlier node, not only the current one, when the record shows
-that branch was abandoned too early. Do not repeat an exploration that already
-ran with the same system and constraints — its result is in the record.
+branch from any earlier node when the record shows that branch was abandoned
+too early. An exploration of a system that already ran with constraints at
+least as wide is refused — its result is in the record — so widen the cell
+size or trial count, or choose different bounds, if you return to a system.
 
 Calculations are the scarce resource. A GGen exploration takes tens of minutes
-to hours. Cheap properties take minutes each. Expensive properties are
-multi-hour DFT jobs with a small per-run allowance, so an `evaluate` move that
-spends one on an already-promising candidate can be worth more than another
-exploration."""
+to hours and measures the free and cheap properties on what it finds. Expensive
+properties are multi-hour DFT jobs with a small per-run allowance. They are
+spent only by `evaluate` moves, and only on candidates that could still beat
+the best fully measured one, so propose an `evaluate` when a partly measured
+candidate is promising enough to settle."""
 
 RESEARCH_SYSTEM = """You support a computational materials search by doing
 the background work before its next step. You are given the objective and the
@@ -193,7 +204,12 @@ REFLECT_SYSTEM = """You record what a step of a materials search taught us.
 You are given the move, the prediction made before it ran, and the measured
 result. Compare them honestly. A property marked NOT MEASURED had a
 calculation error: its value is unknown, which is different from a bad value,
-so never report it as a failed check. Learnings are read at every later step and in
+so never report it as a failed check. Likewise an exploration that returned
+no candidates shows only that nothing near the hull was generated under that
+move's own constraints (composition bounds, cell size, crystal systems, number
+of trials): say which constraints were in force, and do not conclude anything
+about the chemistry unless the summary shows many stoichiometries were tried.
+Learnings are read at every later step and in
 later runs, often without the surrounding detail, so write each as a
 self-contained statement that names the chemical system, the observation, and
 the numbers that support it. Record negative results too: a direction that
@@ -204,6 +220,18 @@ failed and why is as useful as one that worked."""
 class Budget:
     expensive_left: int
     deadline: float
+
+
+@dataclass
+class Verdict:
+    """The harness's judgement of the goal after a step.
+
+    ``met`` and ``blocked`` end a run; ``not_yet`` carries what is missing,
+    which is shown to the model before it proposes the next move.
+    """
+
+    status: Literal["met", "not_yet", "blocked"]
+    reason: str
 
 
 def campaign_key(goal: str) -> str:
@@ -257,42 +285,161 @@ class Search:
         return self.store.campaign(campaign["id"])
 
     def run(self, campaign_id: int, run_id: int) -> Dict[str, Any]:
-        """Take up to ``max_steps`` search steps within the run budget."""
+        """Step until the goal is met, nothing more can be done, or the run's
+        step budget is spent."""
         budget = Budget(
             expensive_left=self.config.max_expensive_evals,
             deadline=time.time() + self.config.max_runtime_seconds,
         )
         self._save_costs(campaign_id, run_id)  # objective compilation, if any
+        verdict = self.judge(campaign_id, budget)
         for index in range(self.config.max_steps):
+            if verdict.status != "not_yet":
+                break
             if time.time() > budget.deadline:
                 logger.info("Run time budget exhausted")
                 break
             try:
-                self.step(campaign_id, run_id, index, budget)
+                self.step(campaign_id, run_id, index, budget, verdict)
             except Exception:
                 logger.exception(f"Step {index} could not be taken")
                 self._save_costs(campaign_id, run_id)
-        return self.result(campaign_id, run_id)
+            verdict = self.judge(campaign_id, budget)
+        logger.info(f"Goal {verdict.status.replace('_', ' ')}: {verdict.reason}")
+        result = self.result(campaign_id, run_id)
+        result["verdict"] = {"status": verdict.status, "reason": verdict.reason}
+        return result
+
+    # -- the goal -----------------------------------------------------------
+
+    def judge(self, campaign_id: int, budget: Budget) -> Verdict:
+        """Decide from the measurements whether the goal is met, and if not,
+        what is missing."""
+        objective = ObjectiveSpec.model_validate(
+            self.store.campaign(campaign_id)["objective"]
+        )
+        candidates = self.store.candidates(campaign_id)  # best score first
+        for c in candidates:
+            if not objective.gaps(c["properties"]):
+                return Verdict(
+                    "met",
+                    f"{c['formula']} (candidate {c['id']}) has every criterion "
+                    f"measured and meets every target, score {c['score']:.3f}.",
+                )
+
+        complete = [c for c in candidates if objective.complete(c["properties"])]
+        proven = complete[0]["score"] if complete else 0.0
+        if complete:
+            best = complete[0]
+            lines = [
+                f"Best fully measured: {best['formula']} (candidate {best['id']}), "
+                f"score {best['score']:.3f}. It misses the goal on: "
+                + "; ".join(objective.gaps(best["properties"]))
+                + "."
+            ]
+        else:
+            lines = ["No candidate has every criterion measured yet."]
+
+        waiting = sorted(
+            (
+                {**c, "ceiling": objective.ceiling(c["properties"])}
+                for c in representatives(candidates)
+                if c["evaluated"] and not objective.complete(c["properties"])
+            ),
+            key=lambda c: -c["ceiling"],
+        )
+        waiting = [c for c in waiting if c["ceiling"] > proven]
+        if waiting:
+            lines.append("Partly measured candidates that could still beat that:")
+            for c in waiting[:5]:
+                missing = [
+                    name
+                    for name in objective.properties()
+                    if c["properties"].get(name) is None
+                ]
+                lines.append(
+                    f"- candidate {c['id']}: {c['formula']}, score "
+                    f"{c['score']:.3f}, up to {c['ceiling']:.3f} once "
+                    f"{', '.join(missing)} is measured"
+                )
+        else:
+            lines.append(
+                "No partly measured candidate could beat that: new candidates "
+                "are needed."
+            )
+
+        expensive = objective.properties(EXPENSIVE)
+        queued = [
+            c
+            for c in waiting
+            if any(c["properties"].get(name) is None for name in expensive)
+        ]
+        if (
+            budget.expensive_left <= 0
+            and queued
+            and len(queued) >= self.config.max_expensive_evals
+        ):
+            lines.append(
+                "The expensive-calculation allowance for this run is spent and "
+                f"{len(queued)} candidates already wait for one, which fills "
+                "the next run's allowance."
+            )
+            return Verdict("blocked", "\n".join(lines))
+        return Verdict("not_yet", "\n".join(lines))
+
+    def _proven_best(self, campaign_id: int, objective: ObjectiveSpec) -> float:
+        """Best score among candidates with every criterion measured."""
+        return max(
+            (
+                c["score"]
+                for c in self.store.candidates(campaign_id)
+                if objective.complete(c["properties"])
+            ),
+            default=0.0,
+        )
+
+    def _temperature(self, index: int, campaign: Dict[str, Any]) -> float:
+        """Fall from t_initial to t_min over the run's steps; reheat on a stall."""
+        cfg = self.config
+        fraction = index / max(1, cfg.max_steps - 1)
+        temperature = cfg.t_initial * (cfg.t_min / cfg.t_initial) ** fraction
+        if campaign["steps_since_best"] >= cfg.stall_steps:
+            temperature = min(cfg.t_initial, 2 * temperature)
+            logger.info(
+                f"No new best in {campaign['steps_since_best']} steps — "
+                f"reheating to T={temperature:.3f}"
+            )
+        return temperature
 
     def result(self, campaign_id: int, run_id: int) -> Dict[str, Any]:
         campaign = self.store.campaign(campaign_id)
+        objective = ObjectiveSpec.model_validate(campaign["objective"])
         candidates = self.store.candidates(campaign_id)
+        # A fully measured candidate is a result; a partly measured one is a lead.
+        complete = [c for c in candidates if objective.complete(c["properties"])]
         return {
             "campaign": campaign,
             "run_id": run_id,
             "nodes": self.store.nodes(campaign_id, run_id),
-            "best_candidate": candidates[0] if candidates else None,
+            "best_candidate": (complete or candidates or [None])[0],
             "usage": self.store.usage(run_id),
         }
 
     # -- one step ---------------------------------------------------------
 
     def step(
-        self, campaign_id: int, run_id: int, index: int, budget: Budget
+        self,
+        campaign_id: int,
+        run_id: int,
+        index: int,
+        budget: Budget,
+        verdict: Optional[Verdict] = None,
     ) -> Dict[str, Any]:
         campaign = self.store.campaign(campaign_id)
         objective = ObjectiveSpec.model_validate(campaign["objective"])
-        temperature = campaign["temperature"] or self.config.t_initial
+        verdict = verdict or self.judge(campaign_id, budget)
+        temperature = self._temperature(index, campaign)
+        # The search always continues from the best node so far.
         current = (
             self.store.node(campaign["current_node_id"])
             if campaign["current_node_id"]
@@ -300,7 +447,7 @@ class Search:
         )
 
         record = self._record(campaign, objective)
-        state = self._state(campaign, index, budget, temperature)
+        state = self._state(campaign, objective, index, budget, temperature, verdict)
         research = self._research(record, state, campaign)
         if research:
             state += f"\n\n## Research brief for this step\n{research}"
@@ -345,26 +492,26 @@ class Search:
                 )
             else:
                 status, score = self._execute_explore(
-                    move, node_id, campaign, objective, budget
+                    move, node_id, campaign, objective
                 )
             error = None
         except Exception as e:
             logger.exception(f"Move failed: {e}")
             status, score, error = "failed", 0.0, str(e)
 
-        current_score = current["score"] if current else None
-        accepted = status == "ok" and self._accept(score, current_score, temperature)
+        # `accepted` marks the steps that set a new best.
+        improved = status == "ok" and score > campaign["best_score"]
         self.store.update_node(
-            node_id, status=status, score=score, accepted=int(accepted), error=error
+            node_id, status=status, score=score, accepted=int(improved), error=error
         )
         logger.info(
             f"  → {status}, score {score:.3f} "
-            f"(current {current_score if current_score is None else round(current_score, 3)}), "
-            f"{'accepted' if accepted else 'rejected'}"
+            f"(best so far {campaign['best_score']:.3f})"
+            f"{', new best' if improved else ''}"
         )
 
         self._reflect(campaign_id, node_id, objective)
-        self._advance(campaign, node_id, score, accepted, temperature)
+        self._advance(campaign, node_id, status, score, temperature)
         self._save_costs(campaign_id, run_id, node_id)
         return self.store.node(node_id)
 
@@ -382,34 +529,28 @@ class Search:
         self,
         campaign: Dict[str, Any],
         node_id: int,
+        status: str,
         score: float,
-        accepted: bool,
         temperature: float,
     ) -> None:
-        """Move the search position, cool, and reheat if the search has stalled."""
-        cfg = self.config
+        """Count the step and move the search position to a new best."""
         updates: Dict[str, Any] = {
             "steps_done": campaign["steps_done"] + 1,
-            "current_node_id": node_id if accepted else campaign["current_node_id"],
-            "temperature": max(cfg.t_min, temperature * cfg.cooling),
-            "steps_since_best": campaign["steps_since_best"] + 1,
+            "temperature": temperature,
         }
-        if score > campaign["best_score"]:
-            updates.update(best_score=score, best_node_id=node_id, steps_since_best=0)
-
-        if updates["steps_since_best"] >= cfg.stall_steps:
-            best = updates.get("best_node_id", campaign["best_node_id"])
-            updates["temperature"] = min(cfg.t_initial, updates["temperature"] * 2)
-            updates["steps_since_best"] = 0
-            if best:
-                updates["current_node_id"] = best
-            logger.info(
-                f"No new best in {cfg.stall_steps} steps — reheating to "
-                f"T={updates['temperature']:.3f} and restarting from the best node"
+        if status == "ok" and score > campaign["best_score"]:
+            updates.update(
+                best_score=score,
+                best_node_id=node_id,
+                current_node_id=node_id,
+                steps_since_best=0,
             )
+        elif status == "ok":
+            # A step that found or ran nothing says nothing about a stall.
+            updates["steps_since_best"] = campaign["steps_since_best"] + 1
         self.store.update_campaign(campaign["id"], **updates)
 
-    # -- propose / select / accept ----------------------------------------
+    # -- propose / select ----------------------------------------
 
     def _research(
         self, record: str, state: str, campaign: Dict[str, Any]
@@ -510,11 +651,39 @@ class Search:
                 if not move.properties:
                     return "the expensive-calculation allowance for this run is spent"
             found = [self.store.candidate(c) for c in move.candidate_ids]
-            move.candidate_ids = [
-                c["id"] for c in found if c and c["campaign_id"] == campaign["id"]
-            ]
-            if not move.candidate_ids:
+            found = [c for c in found if c and c["campaign_id"] == campaign["id"]]
+            if not found:
                 return "no known candidate ids given"
+            found = [
+                c
+                for c in found
+                if any(c["properties"].get(p) is None for p in move.properties)
+            ]
+            if not found:
+                return "everything requested is already measured on those candidates"
+
+            expensive = [p for p in move.properties if CATALOG[p].tier == EXPENSIVE]
+            if expensive:
+                # An expensive calculation must be able to change the answer.
+                proven = self._proven_best(campaign["id"], objective)
+                limit = min(
+                    budget.expensive_left, self.config.max_expensive_evals_per_step
+                )
+                kept = []
+                for c in found:
+                    if any(c["properties"].get(p) is None for p in expensive):
+                        if objective.ceiling(c["properties"]) <= proven or limit <= 0:
+                            continue
+                        limit -= 1
+                    kept.append(c)
+                found = kept
+                if not found:
+                    return (
+                        "none of those candidates could beat the best fully "
+                        f"measured score ({proven:.3f}) even with perfect "
+                        "expensive results"
+                    )
+            move.candidate_ids = [c["id"] for c in found]
             return None
 
         if move.kind == "deepen" and not move.chemical_system and parent:
@@ -540,6 +709,53 @@ class Search:
             move.max_atoms = min(move.max_atoms, self.config.ggen_max_atoms_cap)
         if move.num_trials:
             move.num_trials = min(move.num_trials, self.config.ggen_num_trials_cap)
+        earlier = self._covered_by(move, campaign)
+        if earlier:
+            return (
+                f"{move.chemical_system} was already explored at node #{earlier} "
+                "with constraints at least as wide; its result is in the record"
+            )
+        return None
+
+    def _covered_by(self, move: Move, campaign: Dict[str, Any]) -> Optional[int]:
+        """Id of an earlier exploration that already covers this move's reach."""
+        cfg = self.config
+
+        def reach(m: Dict[str, Any]):
+            bounds = {
+                b["element"]: (
+                    b.get("min") or 0.0,
+                    1.0 if b.get("max") is None else b["max"],
+                )
+                for b in m.get("fraction_bounds") or []
+            }
+            return (
+                set(m.get("crystal_systems") or CRYSTAL_SYSTEM_NAMES),
+                bounds,
+                m.get("max_atoms") or cfg.ggen_max_atoms,
+                m.get("num_trials") or cfg.ggen_num_trials,
+            )
+
+        systems, bounds, atoms, trials = reach(move.model_dump())
+        for node in self.store.nodes(campaign["id"]):
+            if (
+                node["kind"] == "evaluate"
+                or node["system"] != move.chemical_system
+                or node["status"] not in ("ok", "empty")
+            ):
+                continue
+            had_systems, had_bounds, had_atoms, had_trials = reach(node["move"])
+            if (
+                had_systems >= systems
+                and had_atoms >= atoms
+                and had_trials >= trials
+                and all(
+                    low <= bounds.get(el, (0.0, 1.0))[0]
+                    and high >= bounds.get(el, (0.0, 1.0))[1]
+                    for el, (low, high) in had_bounds.items()
+                )
+            ):
+                return node["id"]
         return None
 
     def _select(self, moves: List[Move], temperature: float) -> Move:
@@ -547,14 +763,6 @@ class Search:
         top = max(m.predicted_score for m in moves)
         weights = [math.exp((m.predicted_score - top) / temperature) for m in moves]
         return self.rng.choices(moves, weights=weights, k=1)[0]
-
-    def _accept(
-        self, score: float, current_score: Optional[float], temperature: float
-    ) -> bool:
-        """Metropolis criterion on score (higher is better)."""
-        if current_score is None or score >= current_score:
-            return True
-        return self.rng.random() < math.exp((score - current_score) / temperature)
 
     # -- execute ----------------------------------------------------------
 
@@ -564,7 +772,6 @@ class Search:
         node_id: int,
         campaign: Dict[str, Any],
         objective: ObjectiveSpec,
-        budget: Budget,
     ) -> Tuple[str, float]:
         exploration = self.explorer.explore(
             move.chemical_system,
@@ -603,7 +810,10 @@ class Search:
         if not candidates:
             return "empty", 0.0
 
-        # Stability values GGen didn't supply are measured alongside the cheap tier.
+        # Stability values GGen didn't supply are measured alongside the cheap
+        # tier. Expensive properties are left to `evaluate` moves, so they are
+        # spent by choice across the whole campaign rather than on whatever a
+        # step happens to find first.
         cheap = objective.properties(FREE) + objective.properties(CHEAP)
         picks = self._triage(
             objective,
@@ -613,24 +823,6 @@ class Search:
         )
         for cand in picks:
             self._measure(cand, cheap, objective)
-
-        expensive = objective.properties(EXPENSIVE)
-        limit = min(budget.expensive_left, self.config.max_expensive_evals_per_step)
-        if expensive and limit > 0 and picks:
-            measured = [self.store.candidate(c["id"]) for c in picks]
-            for cand in self._triage(
-                objective,
-                measured,
-                limit=limit,
-                purpose=(
-                    f"the expensive properties ({', '.join(expensive)}); "
-                    f"{budget.expensive_left} such calculations remain in this run"
-                ),
-                fallback_all=False,
-            ):
-                budget.expensive_left -= 1
-                measured = self._measure(cand, expensive, objective)
-                budget.expensive_left += self._refund(measured, expensive)
 
         best = self.store.candidates(campaign["id"], node_id)[0]
         return "ok", best["score"]
@@ -786,20 +978,36 @@ class Search:
     # -- context ----------------------------------------------------------
 
     def _state(
-        self, campaign: Dict[str, Any], index: int, budget: Budget, temperature: float
+        self,
+        campaign: Dict[str, Any],
+        objective: ObjectiveSpec,
+        index: int,
+        budget: Budget,
+        temperature: float,
+        verdict: Verdict,
     ) -> str:
-        """What changes every step: where we are in the budget and schedule."""
+        """What changes every step: the budget, the schedule, and the gap."""
         cfg = self.config
-        return (
-            "## Search state\n"
+        lines = [
+            "## Search state",
             f"Step {index + 1} of {cfg.max_steps} in this run; "
             f"{campaign['steps_done']} steps taken over "
-            f"{len(self.store.runs(campaign['id']))} runs so far.\n"
+            f"{len(self.store.runs(campaign['id']))} runs so far.",
             f"Temperature {temperature:.3f} on the 0-1 score scale "
-            f"(starts at {cfg.t_initial}, floor {cfg.t_min}).\n"
-            f"Best score so far: {campaign['best_score']:.3f}.\n"
-            f"Expensive calculations left in this run: {budget.expensive_left}."
-        )
+            f"(falls from {cfg.t_initial} to {cfg.t_min} over the run).",
+            f"Best score so far: {campaign['best_score']:.3f}.",
+            f"Expensive calculations left in this run: {budget.expensive_left}.",
+        ]
+        if objective.properties(EXPENSIVE):
+            cap = objective.reachable(
+                objective.properties(FREE) + objective.properties(CHEAP)
+            )
+            lines.append(
+                "An explore or deepen move measures only the free and cheap "
+                f"properties, so its score cannot exceed {cap:.2f}; only an "
+                "evaluate move that adds the expensive ones can score higher."
+            )
+        return "\n".join(lines) + f"\n\n## Where the goal stands\n{verdict.reason}"
 
     def _record(self, campaign: Dict[str, Any], objective: ObjectiveSpec) -> str:
         """The search record. Identical for every call within a step, so it is
@@ -814,6 +1022,8 @@ class Search:
             f"## Objective\n{objective.describe()}",
             f"## Measurable properties\n{describe_catalog()}",
         ]
+        if self.config.world_note:
+            parts.append(f"## About this world\n{self.config.world_note}")
 
         if not nodes:
             parts.append(
@@ -822,7 +1032,7 @@ class Search:
             )
         else:
             parts.append(
-                "## Path to the current position (root first)\n"
+                "## Path to the best position so far (root first)\n"
                 + "\n".join(_node_line(n, detail=True) for n in path)
             )
             off_path = [n for n in nodes if n["id"] not in path_ids]
@@ -833,6 +1043,9 @@ class Search:
                 )
 
         candidates = annotate_equivalents(candidates)
+        for c in candidates:
+            if c["evaluated"]:
+                c["ceiling"] = objective.ceiling(c["properties"])
         evaluated = [c for c in candidates if c["evaluated"]]
         if evaluated:
             parts.append(
@@ -903,6 +1116,12 @@ def _candidate_table(candidates: List[Dict[str, Any]]) -> str:
             if c["errors"]
             else ""
         )
+        # Only worth stating when something is still unmeasured.
+        potential = (
+            f" (up to {c['ceiling']:.3f} once fully measured)"
+            if c.get("ceiling", 0) > c["score"] + 5e-4
+            else ""
+        )
         same = (
             f" | same structure as candidates {c['equivalents']} "
             "(other cell sizes)"
@@ -913,7 +1132,8 @@ def _candidate_table(candidates: List[Dict[str, Any]]) -> str:
             f"- candidate {c['id']}: {c['formula']} "
             f"(space group {sg}, {crystal_system(sg)}; node #{c['node_id']}"
             f"{'; ' + c['origin'] if c.get('origin') else ''}) | "
-            f"{measured or 'nothing measured'} | score {c['score']:.3f}{failed}{same}"
+            f"{measured or 'nothing measured'} | score {c['score']:.3f}"
+            f"{potential}{failed}{same}"
         )
     return "\n".join(lines) or "(none)"
 
@@ -977,18 +1197,12 @@ def _describe_move(node: Dict[str, Any]) -> str:
 
 def _node_line(node: Dict[str, Any], detail: bool) -> str:
     move = node["move"]
-    verdict = (
-        "accepted"
-        if node["accepted"]
-        else "failed"
-        if node["status"] == "failed"
-        else "rejected"
-    )
     line = (
         f"- node #{node['id']} (run {node['run_id']}, from "
         f"#{node['parent_id']}): {_describe_move(node)} → {node['status']}, "
         f"score {node['score']:.3f} vs predicted "
-        f"{move.get('predicted_score', 0):.2f}, {verdict}"
+        f"{move.get('predicted_score', 0):.2f}"
+        f"{', new best' if node['accepted'] else ''}"
     )
     if node.get("error"):
         line += f"\n  error: {node['error'][:300]}"

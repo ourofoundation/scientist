@@ -17,19 +17,32 @@ The harness owns the loop; the LLM supplies direction.
 1. **Compile the goal.** The goal becomes an objective: criteria over
    measurable properties (targets, weights, hard constraints) plus required
    and forbidden elements. Compiled once per campaign.
-2. **Propose.** From the current position, the path that led there, every
+2. **Judge.** Before every step the harness decides, from the measurements
+   alone, where the goal stands: *met* (a candidate has every criterion
+   measured and meets every target), *blocked* (the expensive-calculation
+   allowance is spent and enough candidates already wait for one), or *not
+   yet*, with what is missing. Met and blocked end the run; the gap is shown
+   to the LLM before it proposes.
+3. **Propose.** From the best position so far, the path that led there, every
    measured candidate, and the learnings so far, the LLM proposes several moves,
    each with a predicted score. A move explores a chemical system with GGen,
    deepens a system already explored, or spends calculations on candidates
    already found. Before proposing, a bounded research sub-agent searches the
    literature and queries the search memory, and returns a sourced brief.
-3. **Select.** The harness picks a move with probability ∝ exp(predicted / T).
-4. **Execute.** GGen explores; the LLM triages which near-hull candidates get
-   the cheap property routes, then which get the expensive ones.
-5. **Accept or reject.** Better results are accepted; worse ones with
-   probability exp(Δ / T). The temperature cools each step and reheats when
-   the search stalls, restarting from the best node.
+4. **Select.** The harness picks a move with probability ∝ exp(predicted / T).
+   The temperature falls from `t_initial` to `t_min` over the run's steps and
+   reheats when the search stalls. A move that repeats an earlier exploration
+   without widening it is refused.
+5. **Execute.** GGen explores and the LLM triages which near-hull candidates
+   get the cheap property routes. Expensive properties are spent only by
+   `evaluate` moves, and only on candidates that could still beat the best
+   fully measured one.
 6. **Reflect.** The LLM compares prediction with result and records learnings.
+   The search continues from the best node so far.
+
+A score counts only measured criteria. A partly measured candidate also has a
+ceiling — its score if everything unmeasured came out perfectly — which is what
+decides whether an expensive calculation on it is worth running.
 
 Every step is a node in a tree stored in a private SQLite database, so a later
 run of the same goal resumes the same campaign from where it stopped.
@@ -73,7 +86,7 @@ to read its response.
 ```
 scientist/
   core/
-    search.py      # the annealing loop: propose, select, execute, accept, reflect
+    search.py      # the annealing loop: judge, propose, select, execute, reflect
     objective.py   # goal → ObjectiveSpec, scoring
     store.py       # SQLite memory: campaigns, nodes, candidates, learnings
     agent.py       # bounded sub-agent: tool loop, budget, typed result
@@ -82,6 +95,7 @@ scientist/
     config.py
   computational/
     catalog.py     # measurable properties → Ouro routes
+    sim.py         # simulated world for testing the loop (`--sim`)
     explorer.py    # hosted GGen exploration
     evaluator.py   # runs catalog routes on a candidate
     ouro_client.py # Ouro + GGen route client
@@ -101,6 +115,10 @@ scientist "<goal>" --steps 3       # shorter run
 scientist --campaign <key>         # resume a campaign by key
 scientist --list                   # campaigns in memory
 
+# Simulated world: instant calculations, cheap model, separate memory,
+# nothing sent to Ouro. --oracle prints the best score the world contains.
+scientist --sim --steps 12 --oracle [--seed N] [--model <openrouter id>]
+
 pytest tests
 ```
 
@@ -111,6 +129,7 @@ Required: `OPENROUTER_API_KEY`, `OURO_API_KEY`, `OURO_TEAM_ID`.
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `SCIENTIST_MODEL` | `anthropic/claude-opus-5.5` | OpenRouter model |
+| `SCIENTIST_REASONING_EFFORT` | `high` (`low` with `--sim`) | Reasoning effort sent to the model |
 | `SCIENTIST_DB` | `~/.scientist/scientist.db` | Memory database |
 | `SCIENTIST_RESEARCH` | `true` | Research sub-agent before each step |
 | `SCIENTIST_WEB_RESEARCH` | `true` | Give that sub-agent web tools (else memory only) |
@@ -122,13 +141,13 @@ Required: `OPENROUTER_API_KEY`, `OURO_API_KEY`, `OURO_TEAM_ID`.
 
 | Setting | Default | Meaning |
 |---------|---------|---------|
-| `max_steps` | 5 | Search steps per run |
+| `max_steps` | 5 | Search steps per run (the run's budget; also sets the cooling schedule) |
 | `max_expensive_evals` | 3 | Multi-hour DFT calculations per run |
 | `max_cheap_evals_per_step` | 6 | Candidates sent to cheap routes per step |
 | `proposals_per_step` | 4 | Moves the LLM proposes per step |
 | `research_max_turns` / `research_max_cost_usd` | 8 / 3.0 | Research sub-agent budget per step |
 | `ggen_max_atoms_cap` / `ggen_num_trials_cap` | 32 / 20 | Ceilings on what a move may request |
-| `t_initial` / `t_min` / `cooling` | 0.25 / 0.02 / 0.9 | Annealing schedule (score scale 0–1) |
-| `stall_steps` | 3 | Steps without a new best before reheating |
+| `t_initial` / `t_min` | 0.25 / 0.02 | Temperature at the first and last step (score scale 0–1) |
+| `stall_steps` | 3 | Productive steps without a new best before reheating |
 | `ggen_e_hull_cutoff` | 0.15 | eV/atom near-hull cutoff |
 | `ggen_poll_timeout` | 14400 | Seconds to wait on a hosted exploration |

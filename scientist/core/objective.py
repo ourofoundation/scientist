@@ -66,11 +66,46 @@ class ObjectiveSpec(BaseModel):
             return f"missing required elements {sorted(missing)}"
         return None
 
-    def score(self, properties: Dict[str, Any]) -> Tuple[float, Dict[str, float]]:
+    def complete(self, properties: Dict[str, Any]) -> bool:
+        """True when every criterion has a measured value."""
+        return all(properties.get(c.property) is not None for c in self.criteria)
+
+    def gaps(self, properties: Dict[str, Any]) -> List[str]:
+        """What keeps these properties from meeting the goal; empty when met."""
+        gaps = []
+        for c in self.criteria:
+            value = properties.get(c.property)
+            if value is None:
+                gaps.append(f"{c.property} not measured")
+            elif not _meets(c, value):
+                unit = CATALOG[c.property].unit if c.property in CATALOG else ""
+                wanted = (
+                    "must be true"
+                    if c.direction == "require_true"
+                    else f"target {'≥' if c.direction == 'maximize' else '≤'} "
+                    f"{c.target:g} {unit}"
+                )
+                gaps.append(f"{c.property} is {value:g} ({wanted})")
+        return gaps
+
+    def ceiling(self, properties: Dict[str, Any]) -> float:
+        """The score if every unmeasured criterion came out perfectly."""
+        return self.score(properties, optimistic=True)[0]
+
+    def reachable(self, properties: List[str]) -> float:
+        """Highest score possible when only ``properties`` are measured."""
+        total = sum(c.weight for c in self.criteria)
+        known = sum(c.weight for c in self.criteria if c.property in properties)
+        return known / total if total > 0 else 0.0
+
+    def score(
+        self, properties: Dict[str, Any], optimistic: bool = False
+    ) -> Tuple[float, Dict[str, float]]:
         """Score measured properties in [0, 1] with a per-criterion breakdown.
 
         Unmeasured properties earn nothing but still count in the denominator,
         so a half-evaluated candidate cannot outrank a fully evaluated one.
+        ``optimistic`` gives them full credit instead (see ``ceiling``).
         """
         total = sum(c.weight for c in self.criteria)
         if total <= 0:
@@ -80,7 +115,7 @@ class ObjectiveSpec(BaseModel):
         violated = False
         for c in self.criteria:
             value = properties.get(c.property)
-            credit = _credit(c, value)
+            credit = 1.0 if optimistic and value is None else _credit(c, value)
             breakdown[c.property] = round(credit, 4)
             if c.hard and value is not None and not _meets(c, value):
                 violated = True

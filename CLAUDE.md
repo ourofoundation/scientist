@@ -6,13 +6,14 @@ Guidance for working in this repository.
 
 An AI scientist for materials research on Ouro. A plain-language goal is
 compiled into a measurable objective, and an annealing search pursues it: the
-LLM proposes moves, the harness selects and accepts them by temperature, and
-every step is remembered across runs. See `README.md` for the full loop.
+harness judges where the goal stands, the LLM proposes moves, the harness
+selects one by temperature, and every step is remembered across runs. See `README.md` for the full loop.
 
 ## Design rules
 
 - **The harness owns control flow.** Budget, temperature, move selection and
-  acceptance are code in `core/search.py`. The LLM is called for bounded
+  the verdict on the goal (`Search.judge`: met / not yet / blocked, computed
+  from measurements, never by a model) are code in `core/search.py`. The LLM is called for bounded
   decisions with a schema (propose, triage, reflect). Do not turn this into a
   free-running tool loop — that is what ouro-agents is for. Where a model does
   need to run free (research), it goes through `core/agent.py`: read-only
@@ -35,7 +36,8 @@ every step is remembered across runs. See `README.md` for the full loop.
 - `scientist/core/store.py` — campaigns, nodes, candidates, learnings
 - `scientist/core/agent.py`, `tools.py` — bounded sub-agent pattern and its tools
 - `scientist/core/llm.py` — OpenRouter client, prompt caching, call records
-- `scientist/computational/` — catalog, GGen explorer, evaluator, Ouro client
+- `scientist/computational/` — catalog, GGen explorer, evaluator, Ouro client,
+  and `sim.py`, the simulated world behind `--sim`
 - `scientist/utils/report.py` — LLM-written report and publishing
 
 ## Essential Commands
@@ -43,8 +45,16 @@ every step is remembered across runs. See `README.md` for the full loop.
 ```bash
 pip install -e .
 scientist "<goal>" --steps 2
+scientist --sim --steps 10 --oracle   # simulated world: ~1 min, a few cents
 pytest tests
 ```
+
+`--sim` swaps GGen and the property routes for `computational/sim.py` (a
+seeded synthetic world with a known best answer), uses a cheap model
+(`SIM_MODEL` in `core/config.py`, or `--model`), keeps memory in
+`~/.scientist/sim-<seed>.db`, and sends nothing to Ouro. Use it for any change
+to the loop's logic; `--oracle` prints how close the run got to the best
+possible score.
 
 ## Environment
 

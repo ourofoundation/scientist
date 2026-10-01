@@ -199,29 +199,117 @@ def test_objective_scoring():
     assert OBJECTIVE.check_system(["Fe", "Co"]) is None
 
 
+def evaluate(ids, properties=("magnetic_anisotropy_energy",), **kw):
+    return move(kind="evaluate", candidate_ids=list(ids), properties=list(properties), **kw)
+
+
 def test_run_records_path_and_cools():
     store = Store(":memory:")
     search, llm = make_search(
         store,
-        [[move(system="Fe-Co", predicted=0.6)], [move(system="Fe-Ni", predicted=0.7)]],
+        [[move(system="Fe-Co", predicted=0.6)], [move(system="Al-Cu", predicted=0.7)]],
         max_steps=2,
     )
     cid, run_id = start(search, store)
     result = search.run(cid, run_id)
 
     nodes = result["nodes"]
-    assert [n["system"] for n in nodes] == ["Co-Fe", "Fe-Ni"]
+    assert [n["system"] for n in nodes] == ["Co-Fe", "Al-Cu"]
     assert nodes[1]["parent_id"] == nodes[0]["id"]
     assert all(n["status"] == "ok" and n["outcome"] == "it ran" for n in nodes)
+    assert [n["accepted"] for n in nodes] == [1, 0]
 
-    # FeNi has the high MAE, so it should be the best and the current position.
-    assert result["best_candidate"]["formula"] == "FeNi"
+    # The search stays at the best node, and exploring spends nothing expensive.
     campaign = result["campaign"]
-    assert campaign["current_node_id"] == nodes[1]["id"]
-    assert campaign["best_node_id"] == nodes[1]["id"]
-    assert campaign["temperature"] == pytest.approx(0.25 * 0.9 * 0.9)
+    assert campaign["current_node_id"] == campaign["best_node_id"] == nodes[0]["id"]
+    assert not any(
+        "magnetic_anisotropy_energy" in c["properties"] for c in store.candidates(cid)
+    )
+    # Temperature falls from t_initial to t_min across the run's steps.
+    assert [n["temperature"] for n in nodes] == pytest.approx([0.25, 0.02])
+    assert result["verdict"]["status"] == "not_yet"
     assert len(store.learnings(cid)) == 2
     assert store.candidate(1)["file_id"]
+
+
+def test_run_stops_when_the_goal_is_met():
+    store = Store(":memory:")
+    search, llm = make_search(
+        store,
+        [[move(system="Fe-Ni")], [evaluate([1])], [move(system="Fe-Co")]],
+        max_steps=3,
+    )
+    cid, run_id = start(search, store)
+    result = search.run(cid, run_id)
+
+    assert [n["kind"] for n in result["nodes"]] == ["explore", "evaluate"]
+    assert result["verdict"]["status"] == "met"
+    assert result["best_candidate"]["formula"] == "FeNi"
+    # Before the evaluate move, the model was told what was missing.
+    gap = [p for name, p in llm.prompts if name == "Proposals"][1]
+    assert "up to" in gap and "magnetic_anisotropy_energy is measured" in gap
+
+
+def test_run_stops_when_blocked_on_expensive_budget():
+    store = Store(":memory:")
+    search, _ = make_search(
+        store,
+        [[move(system="Fe-Co")], [evaluate([1, 2])], [move(system="Fe-Ni")]],
+        max_steps=4,
+        max_expensive_evals=1,
+    )
+    cid, run_id = start(search, store)
+    result = search.run(cid, run_id)
+
+    expensive = [
+        c for c in search.evaluator.calls if "magnetic_anisotropy_energy" in c[1]
+    ]
+    assert len(expensive) == 1
+    assert len(result["nodes"]) == 2
+    assert result["verdict"]["status"] == "blocked"
+    assert result["best_candidate"]["formula"] == "FeCo"  # the fully measured one
+
+
+def test_expensive_calculation_must_be_able_to_change_the_answer():
+    WORLD["Fe-Pd"] = {"FePd": (0.01, 700.0, 0.9)}
+    try:
+        store = Store(":memory:")
+        search, llm = make_search(
+            store,
+            [
+                [move(system="Fe-Pd")],
+                [evaluate([1])],
+                [move(system="Al-Cu")],
+                [evaluate([2])],
+            ],
+            max_steps=4,
+        )
+        cid, run_id = start(search, store)
+        nodes = search.run(cid, run_id)["nodes"]
+    finally:
+        del WORLD["Fe-Pd"]
+    # AlCu cannot beat FePd even with a perfect result, so it is never run.
+    assert len(nodes) == 3
+    assert ("AlCu", ["magnetic_anisotropy_energy"]) not in search.evaluator.calls
+    assert "could beat the best fully" in llm.prompts[-1][1]
+
+
+def test_repeated_exploration_is_refused():
+    store = Store(":memory:")
+    search, llm = make_search(
+        store,
+        [
+            [move(system="Fe-Co")],
+            [move(system="Fe-Co", max_atoms=8)],
+            [move(kind="deepen", system="Fe-Co", num_trials=20)],
+        ],
+        max_steps=2,
+    )
+    cid, run_id = start(search, store)
+    search.run(cid, run_id)
+    assert [kw["num_trials"] for _, kw in search.explorer.calls] == [None, 20]
+    reprompt = [p for name, p in llm.prompts if name == "Proposals"][-1]
+    assert "already explored at node #1" in reprompt
 
 
 def test_second_run_sees_history():
@@ -270,22 +358,6 @@ def test_failed_move_is_recorded_not_accepted():
     assert store.campaign(cid)["current_node_id"] == nodes[0]["id"]
 
 
-def test_expensive_budget_is_respected():
-    store = Store(":memory:")
-    search, _ = make_search(
-        store,
-        [[move(system="Fe-Co")], [move(system="Fe-Ni")]],
-        max_steps=2,
-        max_expensive_evals=1,
-    )
-    cid, run_id = start(search, store)
-    search.run(cid, run_id)
-    expensive = [
-        c for c in search.evaluator.calls if "magnetic_anisotropy_energy" in c[1]
-    ]
-    assert len(expensive) == 1
-
-
 def test_evaluate_move_updates_owner_node():
     store = Store(":memory:")
     search, _ = make_search(
@@ -293,15 +365,10 @@ def test_evaluate_move_updates_owner_node():
         [
             [move(system="Fe-Ni")],
             [
-                move(
-                    kind="evaluate",
-                    candidate_ids=[1],
-                    properties=["magnetic_anisotropy_energy"],
-                )
+                evaluate([1])
             ],
         ],
         max_steps=2,
-        max_expensive_evals_per_step=0,
     )
     cid, run_id = start(search, store)
     nodes = search.run(cid, run_id)["nodes"]
@@ -311,7 +378,7 @@ def test_evaluate_move_updates_owner_node():
     assert store.node(nodes[0]["id"])["score"] == nodes[1]["score"]
 
 
-def test_selection_and_acceptance_follow_temperature():
+def test_selection_follows_temperature():
     store = Store(":memory:")
     search, _ = make_search(store, [])
     moves = [move(system="Fe-Co", predicted=0.2), move(system="Fe-Ni", predicted=0.8)]
@@ -321,25 +388,30 @@ def test_selection_and_acceptance_follow_temperature():
     hot = [search._select(moves, 5.0).chemical_system for _ in range(200)]
     assert 40 < hot.count("Fe-Co") < 160
 
-    assert search._accept(0.5, 0.4, 0.01)
-    assert search._accept(0.1, None, 0.01)
-    assert not any(search._accept(0.1, 0.6, 0.01) for _ in range(50))
-    assert any(search._accept(0.5, 0.6, 1.0) for _ in range(50))
 
-
-def test_stall_reheats_and_returns_to_best():
+def test_stall_reheats_and_failures_do_not_count():
     store = Store(":memory:")
     search, _ = make_search(
         store,
-        [[move(system="Fe-Ni")], [move(system="Al-Cu")], [move(system="Al-Cu")]],
-        max_steps=3,
-        stall_steps=2,
+        [
+            [move(system="Fe-Co")],
+            [move(system="Mn-Bi")],  # fails
+            [move(system="Al-Cu")],
+            [move(system="Fe-Ni")],
+        ],
+        max_steps=4,
+        stall_steps=1,
     )
     cid, run_id = start(search, store)
     nodes = search.run(cid, run_id)["nodes"]
     campaign = store.campaign(cid)
     assert campaign["current_node_id"] == nodes[0]["id"]
-    assert campaign["temperature"] == 0.25  # doubled, capped at t_initial
+    assert campaign["steps_since_best"] == 2
+    schedule = [0.25 * (0.02 / 0.25) ** (i / 3) for i in range(4)]
+    # Only the step after a productive step without a new best is reheated.
+    assert [n["temperature"] for n in nodes] == pytest.approx(
+        [schedule[0], schedule[1], schedule[2], 2 * schedule[3]]
+    )
 
 
 def test_campaign_key_is_stable():

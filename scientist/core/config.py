@@ -16,6 +16,8 @@ DEFAULT_GOAL = (
     "Find a rare-earth-free permanent magnet with high magnetic anisotropy "
     "energy, a Curie temperature above 500 K, and low raw-material cost."
 )
+# Default model for `--sim` runs, where the loop is under test, not the chemistry.
+SIM_MODEL = "google/gemini-3.5-flash-lite"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -40,7 +42,9 @@ class ScientistConfig:
         default_factory=lambda: os.getenv("OPENROUTER_API_KEY", "")
     )
     llm_max_tokens: int = 32000
-    llm_reasoning_effort: str = "high"
+    llm_reasoning_effort: str = field(
+        default_factory=lambda: os.getenv("SCIENTIST_REASONING_EFFORT", "high")
+    )
     # Research sub-agent that runs before each proposal. `web_research` gates
     # its web tools; without them it can still query the search memory.
     research: bool = field(default_factory=lambda: _env_bool("SCIENTIST_RESEARCH", True))
@@ -72,10 +76,10 @@ class ScientistConfig:
     proposals_per_step: int = 4
 
     # Annealing. Scores live in [0, 1], so temperatures are on that scale.
+    # The temperature falls from t_initial to t_min over the run's steps.
     t_initial: float = 0.25
     t_min: float = 0.02
-    cooling: float = 0.9  # multiplied in after every step
-    stall_steps: int = 3  # steps without a new best before reheating
+    stall_steps: int = 3  # productive steps without a new best before reheating
 
     # Hosted GGen exploration defaults (a move may override max_atoms/num_trials)
     ggen_max_atoms: int = 16
@@ -95,20 +99,48 @@ class ScientistConfig:
         default_factory=lambda: os.getenv("OURO_ASSET_VISIBILITY", "private")
     )
 
+    # Simulated world (`--sim`): GGen and the property routes are replaced by
+    # computational/sim.py, nothing is sent to Ouro, and memory is kept apart.
+    sim: bool = False
+    sim_seed: int = 0
+    sim_failure_rate: float = field(
+        default_factory=lambda: float(os.getenv("SCIENTIST_SIM_FAILURE_RATE", "0"))
+    )
+    # Shown to the model with the search record; says what world it is in.
+    world_note: str = ""
+
+    def use_sim(self, seed: int = 0) -> None:
+        """Switch to the simulated world, with settings that keep it cheap."""
+        from ..computational.sim import WORLD_NOTE
+
+        self.sim, self.sim_seed, self.world_note = True, seed, WORLD_NOTE
+        # Real literature says nothing about an invented world.
+        self.web_research = False
+        self.research = _env_bool("SCIENTIST_RESEARCH", False)
+        if not os.getenv("SCIENTIST_MODEL"):
+            self.llm_model = SIM_MODEL
+        if not os.getenv("SCIENTIST_REASONING_EFFORT"):
+            self.llm_reasoning_effort = "low"
+        # Simulated learnings must never reach the real memory.
+        if not os.getenv("SCIENTIST_DB"):
+            self.db_path = os.path.expanduser(f"~/.scientist/sim-{seed}.db")
+
     def validate(self) -> None:
         if not self.llm_api_key:
             raise ValueError("OPENROUTER_API_KEY environment variable is required")
-        if not self.ouro_api_key:
+        if not self.sim and not self.ouro_api_key:
             raise ValueError("OURO_API_KEY environment variable is required")
-        if not self.ouro_team_id:
+        if not self.sim and not self.ouro_team_id:
             raise ValueError("OURO_TEAM_ID environment variable is required")
         if self.max_steps <= 0:
             raise ValueError("max_steps must be positive")
-        if not 0 < self.cooling <= 1:
-            raise ValueError("cooling must be in (0, 1]")
+        if not 0 < self.t_min <= self.t_initial:
+            raise ValueError("need 0 < t_min <= t_initial")
 
     @classmethod
-    def from_env(cls) -> "ScientistConfig":
+    def from_env(cls, sim: bool = False, sim_seed: int = 0) -> "ScientistConfig":
         config = cls()
+        if sim:
+            config.use_sim(sim_seed)
         config.validate()
         return config

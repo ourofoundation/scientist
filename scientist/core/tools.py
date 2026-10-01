@@ -116,7 +116,7 @@ def query_memory_tool(store, campaign_id: int, max_rows: int = 200) -> Tool:
             "real. Tables:\n"
             "- campaigns(id, goal, best_score, steps_done)\n"
             "- nodes(id, campaign_id, run_id, parent_id, kind, system, status, "
-            "score, accepted, outcome, surprise, error, move, research)\n"
+            "score, accepted (1 = set a new best), outcome, surprise, error, move, research)\n"
             "- candidates(id, campaign_id, node_id, formula, system, score, "
             "evaluated, properties, errors) — properties is JSON, e.g. "
             "json_extract(properties, '$.curie_temperature'). Do not select "

@@ -23,9 +23,11 @@ REPORT_SYSTEM = """You write the report for one run of an autonomous materials
 search, published as a post on Ouro for a scientist who was not watching.
 
 The search is an annealing walk: at each step a model proposed moves with a
-predicted score, one was run, and the result was accepted or rejected. You are
-given the objective, the full record of this run's steps, earlier runs in
-brief, every measured candidate, and an inventory of Ouro assets.
+predicted score and one was run. Scores count only measured criteria, and
+after every step the harness judged whether the goal was met. You are given
+the objective, that final verdict, the full record of this run's steps,
+earlier runs in brief, every measured candidate, and an inventory of Ouro
+assets.
 
 Write the report a careful researcher would want: lead with what this run
 found and how far the best candidate is from the objective, then the reasoning
@@ -330,6 +332,7 @@ class Reporter:
         inventory: List[Dict[str, Any]],
     ) -> str:
         campaign = result["campaign"]
+        verdict = result.get("verdict") or {}
         run_nodes = result["nodes"]
         run_node_ids = {n["id"] for n in run_nodes}
         earlier = [
@@ -365,6 +368,8 @@ class Reporter:
                 f"{len(self.store.runs(campaign['id']))} runs; best score "
                 f"{campaign['best_score']:.3f}; temperature now "
                 f"{campaign['temperature']:.3f}.",
+                f"## Verdict on the goal: {verdict.get('status', 'unknown')}\n"
+                f"{verdict.get('reason', '')}",
                 "## Earlier runs (brief)\n"
                 + ("\n".join(_node_line(n, detail=False) for n in earlier) or "(none)"),
                 "## Learnings carried in from earlier runs\n"
