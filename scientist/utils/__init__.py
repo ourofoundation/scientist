@@ -1,6 +1,5 @@
-"""Utility functions and publishing."""
+"""Logging and report publishing."""
 
-from .publisher import Publisher
 from .logging import setup_logging, get_logger
 
-__all__ = ["Publisher", "setup_logging", "get_logger"]
+__all__ = ["setup_logging", "get_logger"]

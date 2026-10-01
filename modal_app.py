@@ -4,26 +4,26 @@ Deploy (schedules only fire after deploy, not serve):
 
     MODAL_PROFILE=ouro-users modal deploy modal_app.py
 
-Manual run:
+Manual run, optionally on a different goal:
 
     MODAL_PROFILE=ouro-users modal run modal_app.py
+    MODAL_PROFILE=ouro-users modal run modal_app.py --goal "Find a Gd-based ..."
+
+The `scientist-secrets` secret needs OPENROUTER_API_KEY, OURO_API_KEY and
+OURO_TEAM_ID. Set SCIENTIST_GOAL there to change what the daily run pursues.
 """
 
 import modal
 
 # GGen runs remotely via Ouro-hosted routes — no local GPU/MLIP stack needed.
-# ouro-py>=0.11 is required for wait=False / poll_action on long explore jobs.
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install(
-        "dspy-ai>=2.0.0",
-        "numpy>=1.24",
         "openai>=1.0.0",
+        "pydantic>=2.0",
         "python-dotenv>=1.0.0",
-        "ouro-py>=0.11.0",
+        "ouro-py>=2.0.0",
         "websocket-client>=1.6.0",
-        "pymatgen>=2024.12.1",
-        "mlflow>=2.21.1",
         "pandas>=2.2.2",
         "requests>=2.25.0",
     )
@@ -32,125 +32,61 @@ image = (
 
 app = modal.App("scientist", image=image)
 
-# Daily at 06:00 UTC. max_containers=1 so a long GGen run cannot overlap the next.
+# The search memory (SQLite) persists here between runs.
+memory = modal.Volume.from_name("scientist-memory", create_if_missing=True)
+MEMORY_DIR = "/memory"
+
+# Daily at 06:00 UTC. max_containers=1 so a long GGen run cannot overlap the
+# next, and so only one writer ever touches the memory database.
 SCHEDULE = modal.Cron("0 6 * * *")
 
 
 @app.function(
     secrets=[modal.Secret.from_name("scientist-secrets")],
+    volumes={MEMORY_DIR: memory},
     timeout=60 * 60 * 24,
     cpu=2,
     memory=4096,
     max_containers=1,
     schedule=SCHEDULE,
 )
-def run_scientist():
-    """Run one discovery loop and publish the summary to Ouro."""
+def run_scientist(goal: str = "", campaign: str = ""):
+    """Run one budgeted search and publish the report to Ouro."""
+    import os
     import sys
 
     sys.path.insert(0, "/root")
+    os.environ["SCIENTIST_DB"] = f"{MEMORY_DIR}/scientist.db"
 
-    import dspy
-
-    from scientist.core.config import ScientistConfig
-    from scientist.core.scientist import MaterialDiscoveryScientist
-    from scientist.utils.publisher import Publisher
-    from scientist.utils.logging import setup_logging, get_logger
+    from scientist.core.config import DEFAULT_GOAL
+    from scientist.main import run_campaign
+    from scientist.utils.logging import setup_logging
 
     setup_logging()
-    logger = get_logger("main")
-
-    config = ScientistConfig.from_env()
-
-    lm = dspy.LM(
-        config.llm_model,
-        api_key=config.llm_api_key,
-        max_tokens=config.llm_max_tokens,
-        cache=config.llm_cache,
-        temperature=config.llm_temperature,
-    )
-    dspy.settings.configure(lm=lm)
-
-    publisher = Publisher(config)
-    initial_post = publisher.create_initial_post(targets=config.default_targets)
-    initial_post_id = (
-        initial_post.get("id")
-        if isinstance(initial_post, dict)
-        else getattr(initial_post, "id", None)
-    )
-
-    scientist = MaterialDiscoveryScientist(config, post_id=initial_post_id)
-
-    logger.info("Starting AI Scientist for Rare-Earth-Free Permanent Magnet Discovery")
-    logger.info("=" * 70)
-
-    discovery = scientist(target_properties=config.default_targets)
-
-    best = discovery.get("best_material")
-    if best:
-        logger.info("=" * 70)
-        logger.info("BEST DISCOVERY:")
-        logger.info(f"Composition: {best['composition']}")
-        logger.info(f"Chemical system: {best.get('chemical_system')}")
-        logger.info(
-            f"Space Group: {best.get('space_group_resolved') or best.get('space_group_used')}"
-        )
-        logger.info(f"Hypothesis: {best['hypothesis']}")
-        logger.info(f"Score: {best['score']:.3f}")
-        logger.info("Predicted Properties:")
-        for prop, value in best["properties"].items():
-            logger.info(
-                f"  - {prop}: {value:.2f}"
-                if isinstance(value, float)
-                else f"  - {prop}: {value}"
-            )
-
-        logger.info("=" * 70)
-        logger.info("EXPLORATION SUMMARY:")
-        for exp in discovery.get("exploration_history", []):
-            logger.info(
-                f"  {exp['chemical_system']}: "
-                f"{exp['num_near_hull']} near-hull, "
-                f"{exp['num_evaluated']} evaluated"
-            )
-
+    goal = goal or os.getenv("SCIENTIST_GOAL") or DEFAULT_GOAL
     try:
-        publisher.publish_run_summary(
-            discovery=discovery,
-            targets=config.default_targets,
-            post_id=initial_post_id,
-        )
-    except Exception as e:
-        logger.exception(f"Publishing to Ouro failed: {e}")
+        result = run_campaign(goal, campaign or None)
+    finally:
+        memory.commit()
 
+    best = result["best_candidate"]
     return {
-        "post_id": initial_post_id,
-        "iterations_run": discovery.get("iterations_run"),
-        "explored_systems": discovery.get("explored_systems"),
-        "n_candidates": len(discovery.get("all_results") or []),
-        "best": (
-            {
-                "composition": best["composition"],
-                "chemical_system": best.get("chemical_system"),
-                "score": best["score"],
-            }
-            if best
-            else None
-        ),
+        "post_id": result.get("post_id"),
+        "steps": len(result["nodes"]),
+        "campaign_steps": result["campaign"]["steps_done"],
+        "best": best
+        and {
+            "formula": best["formula"],
+            "chemical_system": best["system"],
+            "score": best["score"],
+        },
     }
 
 
 @app.local_entrypoint()
-def main():
+def main(goal: str = "", campaign: str = ""):
     """Trigger one scientist run without waiting for the cron."""
     print("Starting AI Scientist on Modal...")
-    result = run_scientist.remote()
-    print("Discovery complete!")
-    if result and result.get("best"):
-        best = result["best"]
-        print(f"\nBest material found: {best['composition']}")
-        print(f"Score: {best['score']:.3f}")
-    elif result:
-        print("No best material this run.")
-        print(f"Systems explored: {result.get('explored_systems')}")
+    result = run_scientist.remote(goal, campaign)
+    print(f"Run complete: {result}")
     return result

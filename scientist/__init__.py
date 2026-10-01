@@ -1,22 +1,15 @@
 """
-AI Scientist Agent for Rare-Earth-Free Permanent Magnet Discovery
+AI Scientist: an LLM-guided annealing search over materials.
 
-A modular system for discovering new magnetic materials using AI-guided
-chemical-system proposals, GGen bulk exploration, and Ouro property evaluation.
+A research goal is compiled into a measurable objective; the search walks
+chemical space with the LLM proposing moves, a harness choosing and accepting
+them by temperature, and every step remembered across runs.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __author__ = "Matt Moderwell"
 __email__ = "matt@ouro.foundation"
 
-from .core.scientist import MaterialDiscoveryScientist
 from .core.config import ScientistConfig
-from .data.models import Material, MaterialProperties, ExplorationSummary
 
-__all__ = [
-    "MaterialDiscoveryScientist",
-    "ScientistConfig",
-    "Material",
-    "MaterialProperties",
-    "ExplorationSummary",
-]
+__all__ = ["ScientistConfig"]

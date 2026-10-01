@@ -1,44 +1,94 @@
 # Scientist
 
-AI-powered rare-earth-free permanent magnet discovery. An LLM proposes
-**chemical systems**; Ouro-hosted GGen explores them in bulk (stoichiometries →
-MLIP relaxation → convex hull); near-hull survivors are evaluated on Ouro for
-magnetic and cost properties.
+An AI scientist for materials research on Ouro. Give it a goal in plain
+language; it searches chemical space for materials that meet it, remembers what
+it tried, and writes up each run.
 
-## Architecture
+```bash
+scientist "Find a rare-earth-free permanent magnet with high MAE"
+scientist "Find a Gd-based permanent magnet with a Curie temperature above 600 K"
+```
 
-1. **Landscape analysis** (`AnalyzeMagnetLandscape`) — identify promising directions
-2. **System proposal** (`ProposeChemicalSystem`) — LLM picks a chemical system +
-   crystal-system / composition constraints (not a single formula)
-3. **Hosted GGen exploration** (`SystemExplorer` →
-   `mmoderwell/explore-a-chemical-system-with-ggen`) — enumerate stoichiometries,
-   generate/relax structures, build the phase diagram, return near-hull CIFs
-4. **Ouro evaluation** (`MaterialEvaluator`) — Curie temperature, magnetization
-   density, cost, and (conditionally) MAE. Local GGen `e_hull` from the
-   exploration summary is preferred over re-computing remotely.
-5. **Interpretation** (`InterpretExplorationResults`) — LLM reads the exploration
-   summary + scored candidates and guides the next system proposal
+## How it works
 
-No local GGen / GPU stack is required — exploration and generation run on Ouro.
+The search is simulated annealing with an LLM as the proposal distribution.
+The harness owns the loop; the LLM supplies direction.
+
+1. **Compile the goal.** The goal becomes an objective: criteria over
+   measurable properties (targets, weights, hard constraints) plus required
+   and forbidden elements. Compiled once per campaign.
+2. **Propose.** From the current position, the path that led there, every
+   measured candidate, and the learnings so far, the LLM proposes several moves,
+   each with a predicted score. A move explores a chemical system with GGen,
+   deepens a system already explored, or spends calculations on candidates
+   already found. Before proposing, a bounded research sub-agent searches the
+   literature and queries the search memory, and returns a sourced brief.
+3. **Select.** The harness picks a move with probability ∝ exp(predicted / T).
+4. **Execute.** GGen explores; the LLM triages which near-hull candidates get
+   the cheap property routes, then which get the expensive ones.
+5. **Accept or reject.** Better results are accepted; worse ones with
+   probability exp(Δ / T). The temperature cools each step and reheats when
+   the search stalls, restarting from the best node.
+6. **Reflect.** The LLM compares prediction with result and records learnings.
+
+Every step is a node in a tree stored in a private SQLite database, so a later
+run of the same goal resumes the same campaign from where it stopped.
+
+At the end of a run the LLM writes the report as an Ouro post, embedding the
+structures, phase diagrams, route runs and a candidates dataset the run produced.
+
+## Sub-agents
+
+`core/agent.py` is a general pattern, not specific to research: give
+`run_agent` a task, a list of `Tool`s, a result schema, and a turn and cost
+budget. The model works with the tools and ends by calling `finish` with a
+result that is validated against the schema; if the budget runs out first, the
+result is recovered from the conversation. The caller always gets a typed
+object back. The research step is one use (`ResearchBrief`).
+
+## Costs and caching
+
+Every LLM call is recorded with its purpose, tokens (including cached and
+cache-write), dollar cost as reported by OpenRouter, and latency. Every Ouro
+route run is recorded with its charge and compute time. Both are stored per
+run and per step in the memory database (`llm_calls`, `route_calls`) and
+summarised in the log and the report footer.
+
+The search record is sent as a shared, cached prefix, so the research and
+proposal calls within a step re-read it at the cached price, and a sub-agent's
+growing conversation is cached turn to turn.
+
+## What it can pursue
+
+A goal is feasible when its properties are in the catalog
+(`scientist/computational/catalog.py`): energy above hull, dynamic stability,
+raw-material cost, Curie temperature, saturation magnetization, magnetic
+anisotropy energy, cell size, space group. Anything in a goal the catalog
+cannot measure is reported as unsupported when the objective is compiled.
+Add a capability by adding a catalog entry that names the Ouro route and how
+to read its response.
 
 ## Package layout
 
 ```
 scientist/
-  agents/signatures.py     # DSPy signatures
-  computational/
-    explorer.py            # hosted GGen exploration wrapper
-    evaluator.py           # two-tier Ouro property evaluation
-    scorer.py              # soft-saturation scoring
-    structure_generator.py # hosted single-structure fallback
-    ouro_client.py         # Ouro + GGen route client
-    tools.py               # facade
   core/
-    scientist.py           # discovery loop
+    search.py      # the annealing loop: propose, select, execute, accept, reflect
+    objective.py   # goal → ObjectiveSpec, scoring
+    store.py       # SQLite memory: campaigns, nodes, candidates, learnings
+    agent.py       # bounded sub-agent: tool loop, budget, typed result
+    tools.py       # read-only tools: web search, page reader, memory SQL
+    llm.py         # OpenRouter client, prompt caching, per-call cost records
     config.py
-  data/models.py
-  utils/publisher.py
-  main.py
+  computational/
+    catalog.py     # measurable properties → Ouro routes
+    explorer.py    # hosted GGen exploration
+    evaluator.py   # runs catalog routes on a candidate
+    ouro_client.py # Ouro + GGen route client
+  utils/report.py  # LLM-written report, asset inventory, publishing
+  main.py          # CLI
+modal_app.py       # daily scheduled run; memory on a Modal Volume
+tests/             # search loop against fake backends
 ```
 
 ## Running
@@ -46,36 +96,39 @@ scientist/
 ```bash
 pip install -e .
 
-# MLflow (optional but configured by default)
-mlflow server --backend-store-uri sqlite:///scientist.sqlite
+scientist "<goal>"                 # new campaign, or resume the same goal
+scientist "<goal>" --steps 3       # shorter run
+scientist --campaign <key>         # resume a campaign by key
+scientist --list                   # campaigns in memory
 
-python -m scientist.main
-# or
-scientist
+pytest tests
 ```
 
 ## Environment
 
-Required:
+Required: `OPENROUTER_API_KEY`, `OURO_API_KEY`, `OURO_TEAM_ID`.
 
-- `OPENAI_API_KEY`
-- `OURO_API_KEY`
-- `OURO_TEAM_ID`
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `SCIENTIST_MODEL` | `anthropic/claude-opus-5.5` | OpenRouter model |
+| `SCIENTIST_DB` | `~/.scientist/scientist.db` | Memory database |
+| `SCIENTIST_RESEARCH` | `true` | Research sub-agent before each step |
+| `SCIENTIST_WEB_RESEARCH` | `true` | Give that sub-agent web tools (else memory only) |
+| `SCIENTIST_SEARCH_MODEL` | `anthropic/claude-haiku-4.5` | Model behind the `web_search` tool |
+| `SCIENTIST_GOAL` | RE-free magnet goal | Goal for the scheduled Modal run |
+| `OURO_ASSET_VISIBILITY` | `private` | Visibility of posts and assets |
 
-## Config knobs
+## Config knobs (`ScientistConfig`)
 
 | Setting | Default | Meaning |
 |---------|---------|---------|
-| `max_iterations` | 5 | Chemical systems to explore |
-| `max_candidates_to_evaluate` | 5 | Near-hull survivors sent to magnetic eval |
-| `ggen_max_atoms` | 16 | Max atoms per formula unit |
-| `ggen_num_trials` | 10 | Generation attempts per stoichiometry |
+| `max_steps` | 5 | Search steps per run |
+| `max_expensive_evals` | 3 | Multi-hour DFT calculations per run |
+| `max_cheap_evals_per_step` | 6 | Candidates sent to cheap routes per step |
+| `proposals_per_step` | 4 | Moves the LLM proposes per step |
+| `research_max_turns` / `research_max_cost_usd` | 8 / 3.0 | Research sub-agent budget per step |
+| `ggen_max_atoms_cap` / `ggen_num_trials_cap` | 32 / 20 | Ceilings on what a move may request |
+| `t_initial` / `t_min` / `cooling` | 0.25 / 0.02 / 0.9 | Annealing schedule (score scale 0–1) |
+| `stall_steps` | 3 | Steps without a new best before reheating |
 | `ggen_e_hull_cutoff` | 0.15 | eV/atom near-hull cutoff |
-| `ggen_poll_timeout` | 14400 | Seconds to wait on hosted explore (4h) |
-| `early_stopping_threshold` | 0.85 | Stop when best score exceeds this |
-
-## Hosted GGen routes used
-
-- Explore: `mmoderwell/explore-a-chemical-system-with-ggen`
-- Export: `mmoderwell/export-candidate-cifs` (fallback for CIFs)
-- Generate: `mmoderwell/generate-a-crystal-structure-using-ggen` (single-structure fallback)
+| `ggen_poll_timeout` | 14400 | Seconds to wait on a hosted exploration |

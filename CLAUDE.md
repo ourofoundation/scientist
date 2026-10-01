@@ -4,47 +4,55 @@ Guidance for working in this repository.
 
 ## Project Overview
 
-AI-powered materials discovery for rare-earth-free permanent magnets. An LLM
-proposes chemical systems; Ouro-hosted GGen explores them in bulk; Ouro routes
-evaluate magnetic/cost properties on the survivors.
+An AI scientist for materials research on Ouro. A plain-language goal is
+compiled into a measurable objective, and an annealing search pursues it: the
+LLM proposes moves, the harness selects and accepts them by temperature, and
+every step is remembered across runs. See `README.md` for the full loop.
 
-## Key Architecture
+## Design rules
 
-1. **System Proposal** (`ProposeChemicalSystem`): LLM proposes a chemical system
-   (e.g. `Fe-Co-Bi`) plus optional crystal-system and composition constraints.
-2. **Hosted Exploration** (`SystemExplorer` → Ouro GGen explore route): enumerate
-   stoichiometries, generate/relax structures, return near-hull CIFs + summary.
-3. **Property Evaluation** (`MaterialEvaluator`): Ouro routes for Curie temp,
-   magnetization density, cost, and conditional MAE. Prefer exploration-provided
-   `e_hull` when available.
-4. **Interpretation** (`InterpretExplorationResults`): LLM summarizes and guides
-   the next system.
+- **The harness owns control flow.** Budget, temperature, move selection and
+  acceptance are code in `core/search.py`. The LLM is called for bounded
+  decisions with a schema (propose, triage, reflect). Do not turn this into a
+  free-running tool loop — that is what ouro-agents is for. Where a model does
+  need to run free (research), it goes through `core/agent.py`: read-only
+  tools, a turn and cost budget, and a typed result.
+- **A calculation error is "unknown", not a negative result.** Keep that
+  distinction visible in every prompt that shows measurements.
+- **Nothing outside `computational/catalog.py` knows which route measures
+  what.** No property names or magnet-specific logic in the search, objective,
+  or report code. New capabilities are catalog entries.
+- **Memory is private.** The search tree lives in SQLite (`core/store.py`),
+  on a Modal Volume in production. Only the run report and the assets a run
+  produces go to Ouro.
+- **The report may only cite real assets.** `utils/report.py` builds an
+  inventory of ids and strips any embed or link not in it.
 
-No local GGen install is required. Mutation / evolutionary structure ops are out
-of scope.
+## Core Components
 
-### Core Components
-
-- `scientist/core/scientist.py` — discovery loop
-- `scientist/computational/explorer.py` — hosted GGen exploration
-- `scientist/computational/ouro_client.py` — Ouro + GGen route client
-- `scientist/computational/evaluator.py` — two-tier evaluation
-- `scientist/computational/scorer.py` — soft-saturation scoring
+- `scientist/core/search.py` — the loop and the LLM decision schemas/prompts
+- `scientist/core/objective.py` — `ObjectiveSpec`, goal compilation, scoring
+- `scientist/core/store.py` — campaigns, nodes, candidates, learnings
+- `scientist/core/agent.py`, `tools.py` — bounded sub-agent pattern and its tools
+- `scientist/core/llm.py` — OpenRouter client, prompt caching, call records
+- `scientist/computational/` — catalog, GGen explorer, evaluator, Ouro client
+- `scientist/utils/report.py` — LLM-written report and publishing
 
 ## Essential Commands
 
 ```bash
 pip install -e .
-python -m scientist.main
+scientist "<goal>" --steps 2
+pytest tests
 ```
 
 ## Environment
 
-- `OPENAI_API_KEY`
+- `OPENROUTER_API_KEY`
 - `OURO_API_KEY`
 - `OURO_TEAM_ID`
 
 ## Dependencies
 
-- DSPy, PyMatGen, MLflow, ouro-py, OpenAI, requests
+- openai (pointed at OpenRouter), pydantic, ouro-py, pandas, requests
 - Hosted GGen on Ouro (no local ggen package)

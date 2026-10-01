@@ -6,8 +6,9 @@ import io
 import json
 import os
 import tempfile
+import time
 import zipfile
-from functools import lru_cache
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -23,8 +24,6 @@ logger = get_logger("ouro_client")
 # Hosted GGen routes (materials-science team)
 GGEN_EXPLORE_ROUTE = "mmoderwell/explore-a-chemical-system-with-ggen"
 GGEN_EXPORT_ROUTE = "mmoderwell/export-candidate-cifs"
-GGEN_GENERATE_ROUTE = "mmoderwell/generate-a-crystal-structure-using-ggen"
-COMPATIBLE_SG_ROUTE = "44aac843-c704-4c1e-b159-4aac4036cb72"
 
 
 class OuroClient:
@@ -42,18 +41,45 @@ class OuroClient:
         self.team_id = team_id
         self.visibility = visibility
         self.post_id = post_id
+        self._charges: List[Dict[str, Any]] = []
 
-    @lru_cache(maxsize=512)
-    def get_compatible_space_groups(self, formula: str) -> List[int]:
-        """Return compatible space groups for a composition."""
-        logger.debug(f"Fetching compatible space groups for {formula}")
-        action = self.ouro.routes.execute(
-            COMPATIBLE_SG_ROUTE,
-            query={"formula": formula},
-            raise_on_error=True,
+    def _meter(self, route: str, action) -> None:
+        """Record what a route run cost and how long it took."""
+        usage = action.usage_record or {}
+        sats = sum(
+            -int(c.get("value") or 0)
+            for c in action.btc_charges or []
+            if c.get("type") == "route_usage"
         )
-        compatible = action.final_data
-        return [int(g["number"]) for g in compatible.get("compatible_space_groups", [])]
+        seconds = 0.0
+        if action.started_at and action.finished_at:
+            seconds = (action.finished_at - action.started_at).total_seconds()
+        self._charges.append(
+            {
+                "route": route,
+                "action_id": str(action.id) if action.id else None,
+                "status": str(getattr(action.status, "value", action.status)),
+                "cost_usd": (usage.get("total_cents") or 0) / 100,
+                "cost_sats": sats,
+                "seconds": round(seconds, 1),
+            }
+        )
+
+    def missing_routes(self, routes: List[str]) -> List[str]:
+        """Routes that do not resolve on Ouro (renamed, removed, or no access)."""
+        missing = []
+        for route in routes:
+            try:
+                self.ouro.routes.retrieve(route)
+            except Exception as e:
+                logger.warning(f"Route {route} is not available: {e}")
+                missing.append(route)
+        return missing
+
+    def drain_charges(self) -> List[Dict[str, Any]]:
+        """Route charges recorded since the last call."""
+        charges, self._charges = self._charges, []
+        return charges
 
     def explore_chemical_system(
         self,
@@ -119,6 +145,7 @@ class OuroClient:
             raise_on_error=False,
         )
 
+        self._meter(GGEN_EXPLORE_ROUTE, action)
         summary = self.extract_explore_summary(action)
         if not summary.get("stable_phases") and action.status != "success":
             raise RuntimeError(
@@ -148,6 +175,7 @@ class OuroClient:
         crystal_systems: Optional[List[str]] = None,
         dynamically_stable_only: bool = False,
         include_metadata: bool = True,
+        structure_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Export near-hull CIFs from the hosted GGen database.
 
@@ -162,6 +190,8 @@ class OuroClient:
         }
         if crystal_systems:
             body["crystal_systems"] = crystal_systems
+        if structure_ids:
+            body["structure_ids"] = structure_ids
 
         logger.info(f"Exporting GGen candidates for {system}")
         action = self.ouro.routes.execute(
@@ -171,42 +201,13 @@ class OuroClient:
             wait=True,
             raise_on_error=True,
         )
+        self._meter(GGEN_EXPORT_ROUTE, action)
 
         file_asset = self._primary_file_asset(action)
         if not file_asset or not file_asset.get("id"):
             raise RuntimeError(f"Export for {system} returned no file asset")
 
         return self.parse_candidate_zip(file_asset["id"])
-
-    def generate_crystal(
-        self,
-        formula: str,
-        space_group: Optional[int] = None,
-        num_trials: int = 10,
-        crystal_systems: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
-        """Generate a single crystal via hosted GGen.
-
-        Returns the action final_data including a materialized CIF `file` asset.
-        """
-        body: Dict[str, Any] = {
-            "formula": formula,
-            "num_trials": num_trials,
-        }
-        if space_group is not None:
-            body["space_group"] = space_group
-        if crystal_systems:
-            body["crystal_systems"] = crystal_systems
-
-        logger.info(f"Generating crystal via hosted GGen: {formula} (SG: {space_group})")
-        action = self.ouro.routes.execute(
-            GGEN_GENERATE_ROUTE,
-            body=body,
-            output={"team_id": self.team_id},
-            wait=True,
-            raise_on_error=True,
-        )
-        return action.final_data
 
     def download_file_bytes(self, file_id: str) -> bytes:
         """Download raw bytes for an Ouro file asset."""
@@ -264,36 +265,93 @@ class OuroClient:
         body: Optional[Dict[str, Any]] = None,
         timeout: int = 900,
         poll_timeout: int = 60 * 60 * 3,
+        input_name: str = "file",
     ) -> Dict[str, Any]:
-        """Execute an Ouro route with a file asset input."""
-        action = self.ouro.routes.execute(
-            route_name,
-            input_assets={"file": str(asset_id)},
-            body=body,
-            output={"team_id": self.team_id},
-            timeout=timeout,
-            wait=True,
-            poll_timeout=poll_timeout,
-            raise_on_error=True,
-        )
-        return action.final_data
+        """Execute an Ouro route with a file asset input.
 
-    def use_route(
-        self,
-        route_name: str,
-        asset_id: str,
-        body: Optional[Dict[str, Any]] = None,
-        timeout: int = 900,
-        poll_timeout: int = 60 * 60 * 3,
-    ) -> Dict[str, Any]:
-        """Deprecated compatibility wrapper for :meth:`execute_route`."""
-        return self.execute_route(
-            route_name,
-            asset_id,
-            body=body,
-            timeout=timeout,
-            poll_timeout=poll_timeout,
-        )
+        Returns ``data`` (the response payload), the ``action_id``, and the
+        ids of any ``output_assets`` keyed by output name, so a report can
+        link and embed what the route produced.
+        """
+        # Queue and poll rather than holding one HTTP request open: a slow
+        # upstream start (cold DFT container) outlives the gateway timeout.
+        started = datetime.now(timezone.utc)
+        try:
+            action = self.ouro.routes.execute(
+                route_name,
+                input_assets={input_name: str(asset_id)},
+                body=body,
+                output={"team_id": self.team_id},
+                timeout=timeout,
+                wait=False,
+                raise_on_error=False,
+            )
+        except Exception as e:
+            # The request can fail after the job was accepted; find it.
+            action = self._find_action(route_name, asset_id, started)
+            if action is None:
+                raise
+            logger.warning(f"{route_name}: request failed ({e}); following {action.id}")
+
+        action = self._poll(str(action.id), poll_timeout)
+        self._meter(route_name, action)
+        if action.is_error:
+            raise RuntimeError(
+                f"{route_name} failed (action {action.id}): "
+                f"{json.dumps(action.response, default=str)[:500]}"
+            )
+        return {
+            "data": action.final_data,
+            "action_id": str(action.id) if action.id else None,
+            "output_assets": {
+                name: {
+                    "id": asset.get("id"),
+                    "asset_type": asset.get("asset_type"),
+                    "name": asset.get("name"),
+                }
+                for name, asset in self._keyed_output_assets(action).items()
+                if asset.get("id")
+            },
+        }
+
+    def _find_action(self, route_name: str, asset_id: str, since: datetime):
+        """The action this client just started on ``asset_id``, if one exists."""
+        try:
+            page = self.ouro.routes.list_actions(route_name, limit=5)
+        except Exception:
+            return None
+        for action in getattr(page, "data", None) or []:
+            inputs = {str(action.input_asset_id)} | {
+                str((i.get("asset") or {}).get("id") or i.get("asset_id"))
+                for i in action.input_assets or []
+            }
+            recent = action.created_at and action.created_at >= since - timedelta(
+                seconds=30
+            )
+            if recent and str(asset_id) in inputs:
+                return action
+        return None
+
+    def _poll(self, action_id: str, timeout: float, interval: float = 10.0):
+        """Poll an action to completion, riding out transient API errors."""
+        deadline = time.time() + timeout
+        failures = 0
+        while True:
+            try:
+                action = self.ouro.routes.retrieve_action(action_id)
+                failures = 0
+                if action.is_complete:
+                    return action
+            except Exception as e:
+                failures += 1
+                if failures >= 10:
+                    raise
+                logger.warning(f"Polling {action_id} failed ({e}); retrying")
+            if time.time() >= deadline:
+                raise TimeoutError(
+                    f"Action {action_id} did not complete within {timeout:.0f}s"
+                )
+            time.sleep(interval)
 
     def _keyed_output_assets(self, action) -> Dict[str, Dict[str, Any]]:
         assets: Dict[str, Dict[str, Any]] = {}
@@ -308,8 +366,8 @@ class OuroClient:
         assets = self._keyed_output_assets(action)
         if "file" in assets:
             return assets["file"]
-        if action.output_asset and isinstance(action.output_asset, dict):
-            return action.output_asset
+        if action.output_asset:
+            return action.output_asset.model_dump(mode="json")
         final = action.final_data if isinstance(action.final_data, dict) else {}
         if isinstance(final.get("file"), dict):
             return final["file"]
