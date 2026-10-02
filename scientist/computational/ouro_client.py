@@ -26,6 +26,12 @@ GGEN_EXPLORE_ROUTE = "mmoderwell/explore-a-chemical-system-with-ggen"
 GGEN_EXPORT_ROUTE = "mmoderwell/export-candidate-cifs"
 
 
+# A run makes dozens of route calls and reports on them itself, so a call
+# that succeeds should not send an Ouro notification of its own. Failures
+# still notify until a run can send one notification for the whole run.
+ROUTE_NOTIFY = "failure"
+
+
 class OuroClient:
     """Wrapper for Ouro API interactions."""
 
@@ -131,6 +137,7 @@ class OuroClient:
             GGEN_EXPLORE_ROUTE,
             body=body,
             output={"team_id": self.team_id},
+            notify=ROUTE_NOTIFY,
             wait=False,
             raise_on_error=False,
         )
@@ -198,6 +205,7 @@ class OuroClient:
             GGEN_EXPORT_ROUTE,
             body=body,
             output={"team_id": self.team_id},
+            notify=ROUTE_NOTIFY,
             wait=True,
             raise_on_error=True,
         )
@@ -282,6 +290,7 @@ class OuroClient:
                 input_assets={input_name: str(asset_id)},
                 body=body,
                 output={"team_id": self.team_id},
+                notify=ROUTE_NOTIFY,
                 timeout=timeout,
                 wait=False,
                 raise_on_error=False,
