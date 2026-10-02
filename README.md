@@ -71,6 +71,39 @@ The search record is sent as a shared, cached prefix, so the research and
 proposal calls within a step re-read it at the cached price, and a sub-agent's
 growing conversation is cached turn to turn.
 
+## Watching and steering a run
+
+```bash
+scientist --watch            # live view of the real memory, http://127.0.0.1:8765
+scientist --watch --sim      # live view of the simulated one
+```
+
+**New goal** on the page takes a goal in plain language, drafts the objective
+with the model, and lets you edit it before anything runs: targets, weights,
+hard constraints, required and forbidden elements, and the search guidance.
+Parts of the goal that cannot be measured are called out. Starting the search
+launches the run as its own process (log in `logs/` beside the memory
+database), and **Run more steps** continues a campaign. Runs can still be
+started from a terminal; both use the same memory database. The page shows the search path (score and prediction per
+step), the step in progress with its proposals and their odds, the judge's
+verdict, the candidates, learnings, and costs.
+
+A run never waits for you unless you ask. Direction is stored as a directive
+and picked up at the next step boundary, and is recorded on the node it
+affected so the record shows where a person steered:
+
+- **Send direction** — a note added to the next proposal prompt (once, or kept
+  for every step).
+- **Pause at next proposals** — the run holds at each step's proposals until
+  you pick one or resume (30 minute timeout, then the harness chooses).
+- **Measure** on a candidate — queues that calculation as the next step, held
+  to the same validation as a move the model proposes.
+- **Allow one more expensive calculation**, **Stop after this step**.
+- **Retract** a learning — removes it from the record the model sees, keeping
+  the fact that it was made.
+
+The watcher binds to localhost only. Runs on Modal are not watchable yet.
+
 ## What it can pursue
 
 A goal is feasible when its properties are in the catalog
@@ -100,6 +133,7 @@ scientist/
     evaluator.py   # runs catalog routes on a candidate
     ouro_client.py # Ouro + GGen route client
   utils/report.py  # LLM-written report, asset inventory, publishing
+  watch.py, watch.html  # local live view and researcher direction
   main.py          # CLI
 modal_app.py       # daily scheduled run; memory on a Modal Volume
 tests/             # search loop against fake backends

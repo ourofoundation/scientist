@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     move TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     score REAL NOT NULL DEFAULT 0,
+    first_score REAL,
     accepted INTEGER NOT NULL DEFAULT 0,
     temperature REAL,
     summary TEXT,
@@ -107,7 +108,30 @@ CREATE TABLE IF NOT EXISTS learnings (
     campaign_id INTEGER NOT NULL,
     node_id INTEGER,
     text TEXT NOT NULL,
+    retracted INTEGER NOT NULL DEFAULT 0,
+    retracted_reason TEXT,
     created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY,
+    campaign_id INTEGER NOT NULL,
+    run_id INTEGER,
+    node_id INTEGER,
+    kind TEXT NOT NULL,
+    data TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS directives (
+    id INTEGER PRIMARY KEY,
+    campaign_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    payload TEXT,
+    sticky INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    note TEXT,
+    node_id INTEGER,
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
 );
 """
 
@@ -119,6 +143,8 @@ _JSON_COLUMNS = {
     "properties",
     "errors",
     "artifacts",
+    "data",
+    "payload",
 }
 
 
@@ -133,6 +159,9 @@ class Store:
         # Sub-agent tools read from worker threads (serialised by their own lock).
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
+        # A watcher process reads, and writes directives, while a run writes.
+        self.db.execute("PRAGMA journal_mode = WAL")
+        self.db.execute("PRAGMA busy_timeout = 10000")
         self.db.executescript(SCHEMA)
         self._migrate()
         self.db.commit()
@@ -143,6 +172,15 @@ class Store:
         for column in ("identity", "origin"):
             if column not in columns:
                 self.db.execute(f"ALTER TABLE candidates ADD COLUMN {column} TEXT")
+        columns = {r["name"] for r in self.db.execute("PRAGMA table_info(nodes)")}
+        if "first_score" not in columns:
+            self.db.execute("ALTER TABLE nodes ADD COLUMN first_score REAL")
+        columns = {r["name"] for r in self.db.execute("PRAGMA table_info(learnings)")}
+        if "retracted" not in columns:
+            self.db.execute(
+                "ALTER TABLE learnings ADD COLUMN retracted INTEGER NOT NULL DEFAULT 0"
+            )
+            self.db.execute("ALTER TABLE learnings ADD COLUMN retracted_reason TEXT")
 
     # -- plumbing ---------------------------------------------------------
 
@@ -297,12 +335,21 @@ class Store:
             },
         )
 
-    def learnings(self, campaign_id: int, limit: int = 40) -> List[Dict[str, Any]]:
+    def learnings(
+        self, campaign_id: int, limit: int = 40, include_retracted: bool = False
+    ) -> List[Dict[str, Any]]:
         rows = self._rows(
-            "SELECT * FROM learnings WHERE campaign_id = ? ORDER BY id DESC LIMIT ?",
-            (campaign_id, limit),
+            "SELECT * FROM learnings WHERE campaign_id = ? AND (retracted = 0 OR ?) "
+            "ORDER BY id DESC LIMIT ?",
+            (campaign_id, int(include_retracted), limit),
         )
         return list(reversed(rows))
+
+    def retract_learning(self, learning_id: int, reason: str = "") -> None:
+        """Take a learning out of the record without erasing that it was made."""
+        self._update(
+            "learnings", learning_id, {"retracted": 1, "retracted_reason": reason}
+        )
 
     def other_campaign_learnings(
         self, campaign_id: int, limit: int = 15
@@ -311,8 +358,83 @@ class Store:
         return self._rows(
             "SELECT l.text, c.goal FROM learnings l "
             "JOIN campaigns c ON c.id = l.campaign_id "
-            "WHERE l.campaign_id != ? ORDER BY l.id DESC LIMIT ?",
+            "WHERE l.campaign_id != ? AND l.retracted = 0 "
+            "ORDER BY l.id DESC LIMIT ?",
             (campaign_id, limit),
+        )
+
+    # -- live events and researcher directives ---------------------------
+
+    def add_event(
+        self,
+        campaign_id: int,
+        kind: str,
+        data: Optional[Dict[str, Any]] = None,
+        run_id: Optional[int] = None,
+        node_id: Optional[int] = None,
+    ) -> int:
+        return self._insert(
+            "events",
+            {
+                "campaign_id": campaign_id,
+                "run_id": run_id,
+                "node_id": node_id,
+                "kind": kind,
+                "data": data or {},
+                "created_at": _now(),
+            },
+        )
+
+    def events(
+        self, campaign_id: int, after: int = 0, limit: int = 500
+    ) -> List[Dict[str, Any]]:
+        return self._rows(
+            "SELECT * FROM events WHERE campaign_id = ? AND id > ? ORDER BY id LIMIT ?",
+            (campaign_id, after, limit),
+        )
+
+    def add_directive(
+        self,
+        campaign_id: int,
+        kind: str,
+        payload: Optional[Dict[str, Any]] = None,
+        sticky: bool = False,
+    ) -> int:
+        return self._insert(
+            "directives",
+            {
+                "campaign_id": campaign_id,
+                "kind": kind,
+                "payload": payload or {},
+                "sticky": int(sticky),
+                "created_at": _now(),
+            },
+        )
+
+    def directives(
+        self, campaign_id: int, status: Optional[str] = "pending"
+    ) -> List[Dict[str, Any]]:
+        if status is None:
+            return self._rows(
+                "SELECT * FROM directives WHERE campaign_id = ? ORDER BY id",
+                (campaign_id,),
+            )
+        return self._rows(
+            "SELECT * FROM directives WHERE campaign_id = ? AND status = ? ORDER BY id",
+            (campaign_id, status),
+        )
+
+    def resolve_directive(
+        self,
+        directive_id: int,
+        status: str,
+        note: Optional[str] = None,
+        node_id: Optional[int] = None,
+    ) -> None:
+        self._update(
+            "directives",
+            directive_id,
+            {"status": status, "note": note, "node_id": node_id, "resolved_at": _now()},
         )
 
     # -- costs -----------------------------------------------------------

@@ -259,6 +259,24 @@ class Search:
         self.rng = rng or random.Random()
         # Anything with drain_charges(): reports what Ouro routes cost.
         self.meter = meter
+        # Where live events are filed: campaign, run and (within a step) node.
+        self._at: Dict[str, Any] = {}
+        self._reading = ""
+
+    def _emit(self, event: str, /, **data: Any) -> None:
+        """Record a live event for watchers. Never allowed to break a run."""
+        if not self._at.get("campaign_id"):
+            return
+        try:
+            self.store.add_event(
+                self._at["campaign_id"],
+                event,
+                data,
+                run_id=self._at.get("run_id"),
+                node_id=self._at.get("node_id"),
+            )
+        except Exception as e:
+            logger.debug(f"Could not record event {event}: {e}")
 
     # -- campaign ---------------------------------------------------------
 
@@ -292,9 +310,21 @@ class Search:
             deadline=time.time() + self.config.max_runtime_seconds,
         )
         self._save_costs(campaign_id, run_id)  # objective compilation, if any
+        self._at = {"campaign_id": campaign_id, "run_id": run_id}
+        self._emit(
+            "run_started",
+            max_steps=self.config.max_steps,
+            model=self.llm.model,
+            expensive_left=budget.expensive_left,
+        )
         verdict = self.judge(campaign_id, budget)
+        stopped = False
         for index in range(self.config.max_steps):
+            self._emit("judged", status=verdict.status, reason=verdict.reason)
             if verdict.status != "not_yet":
+                break
+            if self._controls(campaign_id, budget):
+                stopped = True
                 break
             if time.time() > budget.deadline:
                 logger.info("Run time budget exhausted")
@@ -304,8 +334,15 @@ class Search:
             except Exception:
                 logger.exception(f"Step {index} could not be taken")
                 self._save_costs(campaign_id, run_id)
+            self._at["node_id"] = None
             verdict = self.judge(campaign_id, budget)
         logger.info(f"Goal {verdict.status.replace('_', ' ')}: {verdict.reason}")
+        self._emit(
+            "run_finished",
+            status=verdict.status,
+            reason=verdict.reason,
+            stopped_by_researcher=stopped,
+        )
         result = self.result(campaign_id, run_id)
         result["verdict"] = {"status": verdict.status, "reason": verdict.reason}
         return result
@@ -446,14 +483,54 @@ class Search:
             else None
         )
 
-        record = self._record(campaign, objective)
-        state = self._state(campaign, objective, index, budget, temperature, verdict)
-        research = self._research(record, state, campaign)
-        if research:
-            state += f"\n\n## Research brief for this step\n{research}"
+        self._at.update(campaign_id=campaign_id, run_id=run_id, node_id=None)
+        self._emit(
+            "step_started",
+            index=index,
+            step=campaign["steps_done"],
+            temperature=temperature,
+            expensive_left=budget.expensive_left,
+        )
 
-        moves = self._propose(record, state, campaign, objective, budget)
-        move = self._select(moves, temperature)
+        # Direction from the researcher, if any, is applied at this boundary.
+        notes = self.store.directives(campaign_id)
+        notes = [d for d in notes if d["kind"] == "steer"]
+        used = list(notes)
+        research = None
+        move = self._queued_move(campaign, objective, budget)
+        if move is not None:
+            queued, move = move
+            used.append(queued)
+            moves, selected_by = [move], "researcher"
+        else:
+            record = self._record(campaign, objective)
+            state = self._state(
+                campaign, objective, index, budget, temperature, verdict
+            )
+            if notes:
+                state += "\n\n" + _direction(notes)
+            self._emit("research_started")
+            research = self._research(record, state, campaign)
+            if research:
+                state += f"\n\n## Research brief for this step\n{research}"
+            self._emit("research_done", brief=research)
+
+            moves = self._propose(record, state, campaign, objective, budget)
+            odds = self._odds(moves, temperature)
+            self._emit(
+                "proposed",
+                reading=self._reading,
+                moves=[
+                    {**_move_brief(m), "probability": round(p, 3)}
+                    for m, p in zip(moves, odds)
+                ],
+            )
+            move, chooser = self._await_choice(campaign_id, moves)
+            if move is None:
+                move, selected_by = self._select(moves, temperature), "temperature"
+            else:
+                used.append(chooser)
+                selected_by = "researcher"
         parent_id = move.from_node or (current["id"] if current else None)
         logger.info(
             f"Step {campaign['steps_done']} (T={temperature:.3f}): {move.kind} "
@@ -480,9 +557,25 @@ class Search:
                     for m in moves
                     if m is not move
                 ],
+                "selected_by": selected_by,
+                "directives": [
+                    {"id": d["id"], "kind": d["kind"], **(d["payload"] or {})}
+                    for d in used
+                ],
             },
             temperature=temperature,
             research=research,
+        )
+        self._at["node_id"] = node_id
+        for d in used:
+            if not d["sticky"]:
+                self.store.resolve_directive(d["id"], "applied", node_id=node_id)
+        self._emit(
+            "selected",
+            by=selected_by,
+            index=moves.index(move),
+            move=_move_brief(move),
+            parent_id=parent_id,
         )
 
         try:
@@ -501,8 +594,15 @@ class Search:
 
         # `accepted` marks the steps that set a new best.
         improved = status == "ok" and score > campaign["best_score"]
+        # `score` is revised when a later step measures this node's candidates;
+        # `first_score` keeps what the step itself achieved.
         self.store.update_node(
-            node_id, status=status, score=score, accepted=int(improved), error=error
+            node_id,
+            status=status,
+            score=score,
+            first_score=score,
+            accepted=int(improved),
+            error=error,
         )
         logger.info(
             f"  → {status}, score {score:.3f} "
@@ -510,10 +610,111 @@ class Search:
             f"{', new best' if improved else ''}"
         )
 
+        self._emit(
+            "step_done", status=status, score=score, improved=improved, error=error
+        )
         self._reflect(campaign_id, node_id, objective)
         self._advance(campaign, node_id, status, score, temperature)
         self._save_costs(campaign_id, run_id, node_id)
         return self.store.node(node_id)
+
+    # -- researcher direction ---------------------------------------------
+
+    def _controls(self, campaign_id: int, budget: Budget) -> bool:
+        """Apply budget directives; return True when the run was asked to stop."""
+        stop = False
+        for d in self.store.directives(campaign_id):
+            if d["kind"] == "grant":
+                extra = max(0, int((d["payload"] or {}).get("expensive", 0)))
+                budget.expensive_left += extra
+                self.store.resolve_directive(d["id"], "applied")
+                self._emit("directive_applied", id=d["id"], kind="grant", extra=extra)
+                logger.info(f"Researcher granted {extra} more expensive calculations")
+            elif d["kind"] == "stop":
+                self.store.resolve_directive(d["id"], "applied")
+                self._emit("directive_applied", id=d["id"], kind="stop")
+                logger.info("Researcher asked the run to stop")
+                stop = True
+        return stop
+
+    def _queued_move(
+        self, campaign: Dict[str, Any], objective: ObjectiveSpec, budget: Budget
+    ) -> Optional[Tuple[Dict[str, Any], Move]]:
+        """The next move the researcher asked for, held to the same validation
+        as a move the model proposes."""
+        for d in self.store.directives(campaign["id"]):
+            if d["kind"] != "queue":
+                continue
+            payload = d["payload"] or {}
+            try:
+                move = Move(
+                    kind=payload.get("kind"),
+                    from_node=payload.get("from_node"),
+                    chemical_system=payload.get("chemical_system"),
+                    crystal_systems=payload.get("crystal_systems") or [],
+                    fraction_bounds=payload.get("fraction_bounds") or [],
+                    max_atoms=payload.get("max_atoms"),
+                    num_trials=payload.get("num_trials"),
+                    candidate_ids=payload.get("candidate_ids") or [],
+                    properties=payload.get("properties") or [],
+                    boldness=0.0,
+                    predicted_score=0.0,
+                    prediction="(no prediction: requested by the researcher)",
+                    rationale="Requested by the researcher."
+                    + (f" {payload['note']}" if payload.get("note") else ""),
+                )
+                problem = self._validate(move, campaign, objective, budget)
+            except Exception as e:
+                problem = f"not a usable move: {e}"
+            if problem:
+                self.store.resolve_directive(d["id"], "rejected", note=problem)
+                self._emit("directive_rejected", id=d["id"], kind="queue", why=problem)
+                logger.warning(f"Researcher's queued move rejected: {problem}")
+                continue
+            return d, move
+        return None
+
+    def _await_choice(
+        self, campaign_id: int, moves: List[Move]
+    ) -> Tuple[Optional[Move], Optional[Dict[str, Any]]]:
+        """While the researcher holds a pause, wait for them to pick a move.
+
+        Without a pause this returns at once: the run never waits unasked.
+        Lifting the pause, or the timeout, hands the choice back to the harness.
+        """
+
+        def pending(kind: str) -> List[Dict[str, Any]]:
+            return [d for d in self.store.directives(campaign_id) if d["kind"] == kind]
+
+        if not pending("pause"):
+            return None, None
+        self._emit("paused", options=len(moves))
+        logger.info("Paused at the researcher's request; waiting for a choice")
+        deadline = time.time() + self.config.pause_timeout_seconds
+        chosen: Tuple[Optional[Move], Optional[Dict[str, Any]]] = (None, None)
+        while time.time() < deadline and pending("pause"):
+            choices = pending("choose")
+            if choices:
+                choice = choices[-1]
+                index = (choice["payload"] or {}).get("index")
+                for stale in choices[:-1]:
+                    self.store.resolve_directive(stale["id"], "cancelled")
+                if isinstance(index, int) and 0 <= index < len(moves):
+                    chosen = (moves[index], choice)
+                    break
+                self.store.resolve_directive(
+                    choice["id"], "rejected", note="no such proposal"
+                )
+            time.sleep(self.config.pause_poll_seconds)
+        self._emit("resumed", chosen=chosen[0] is not None)
+        return chosen
+
+    def _odds(self, moves: List[Move], temperature: float) -> List[float]:
+        """Probability the harness would pick each move at this temperature."""
+        top = max(m.predicted_score for m in moves)
+        weights = [math.exp((m.predicted_score - top) / temperature) for m in moves]
+        total = sum(weights)
+        return [w / total for w in weights]
 
     def _save_costs(
         self, campaign_id: int, run_id: int, node_id: Optional[int] = None
@@ -604,6 +805,7 @@ class Search:
                 SEARCH_SYSTEM, ask, Proposals, shared=record, purpose="propose"
             )
             logger.info(f"Reading: {proposals.reading}")
+            self._reading = proposals.reading
 
             valid, problems = [], []
             for move in proposals.moves:
@@ -760,9 +962,7 @@ class Search:
 
     def _select(self, moves: List[Move], temperature: float) -> Move:
         """Boltzmann selection over the LLM's own score predictions."""
-        top = max(m.predicted_score for m in moves)
-        weights = [math.exp((m.predicted_score - top) / temperature) for m in moves]
-        return self.rng.choices(moves, weights=weights, k=1)[0]
+        return self.rng.choices(moves, weights=self._odds(moves, temperature), k=1)[0]
 
     # -- execute ----------------------------------------------------------
 
@@ -773,6 +973,7 @@ class Search:
         campaign: Dict[str, Any],
         objective: ObjectiveSpec,
     ) -> Tuple[str, float]:
+        self._emit("exploring", system=move.chemical_system)
         exploration = self.explorer.explore(
             move.chemical_system,
             crystal_systems=move.crystal_systems,
@@ -807,6 +1008,12 @@ class Search:
             )
 
         candidates = self.store.candidates(campaign["id"], node_id)
+        self._emit(
+            "explored",
+            system=exploration.chemical_system,
+            candidates=len(candidates),
+            summary=exploration.summary,
+        )
         if not candidates:
             return "empty", 0.0
 
@@ -820,6 +1027,11 @@ class Search:
             candidates,
             limit=self.config.max_cheap_evals_per_step,
             purpose=f"the cheap properties ({', '.join(cheap)})",
+        )
+        self._emit(
+            "triaged",
+            picks=[{"id": c["id"], "formula": c["formula"]} for c in picks],
+            properties=cheap,
         )
         for cand in picks:
             self._measure(cand, cheap, objective)
@@ -881,9 +1093,24 @@ class Search:
     def _measure(
         self, candidate: Dict[str, Any], properties: List[str], objective: ObjectiveSpec
     ) -> Dict[str, Any]:
+        wanted = [p for p in properties if candidate["properties"].get(p) is None]
+        self._emit(
+            "measuring",
+            candidate_id=candidate["id"],
+            formula=candidate["formula"],
+            properties=wanted,
+        )
         measurement = self.evaluator.measure(candidate, properties)
         merged = {**candidate["properties"], **measurement.values}
         score, _ = objective.score(merged)
+        self._emit(
+            "measured",
+            candidate_id=candidate["id"],
+            formula=candidate["formula"],
+            values=measurement.values,
+            errors=list(measurement.errors),
+            score=score,
+        )
         self.store.update_candidate(
             candidate["id"],
             file_id=measurement.file_id,
@@ -974,6 +1201,12 @@ class Search:
         for text in reflection.learnings[:3]:
             logger.info(f"  learned: {text}")
             self.store.add_learning(campaign_id, node_id, text)
+        self._emit(
+            "reflected",
+            outcome=reflection.outcome,
+            surprise=reflection.surprise,
+            learnings=reflection.learnings[:3],
+        )
 
     # -- context ----------------------------------------------------------
 
@@ -1175,6 +1408,33 @@ def representatives(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [c for c in annotate_equivalents(candidates) if c["id"] in chosen]
 
 
+def _direction(notes: List[Dict[str, Any]]) -> str:
+    """Researcher steering notes as a prompt section."""
+    lines = [
+        "## Direction from the researcher",
+        "The person running this search has given the direction below. Where "
+        "it is specific, treat it as a constraint on what you propose; where "
+        "it is general, as context. It does not change the objective.",
+    ]
+    lines += [f"- {(d['payload'] or {}).get('text', '')}" for d in notes]
+    return "\n".join(lines)
+
+
+def _move_brief(move: Move) -> Dict[str, Any]:
+    """A move as shown to watchers."""
+    return {
+        "kind": move.kind,
+        "target": move.chemical_system or move.candidate_ids,
+        "from_node": move.from_node,
+        "crystal_systems": move.crystal_systems,
+        "properties": move.properties,
+        "predicted_score": move.predicted_score,
+        "boldness": move.boldness,
+        "prediction": move.prediction,
+        "rationale": move.rationale,
+    }
+
+
 def _describe_move(node: Dict[str, Any]) -> str:
     move = node["move"]
     if node["kind"] == "evaluate":
@@ -1208,6 +1468,11 @@ def _node_line(node: Dict[str, Any], detail: bool) -> str:
         line += f"\n  error: {node['error'][:300]}"
     if detail and move.get("rationale"):
         line += f"\n  why: {move['rationale']}"
+    if move.get("selected_by") == "researcher":
+        line += "\n  chosen by the researcher, not by the harness"
+    for d in move.get("directives") or []:
+        if d.get("kind") == "steer" and d.get("text"):
+            line += f"\n  researcher direction at this step: {d['text']}"
     if node.get("outcome"):
         line += f"\n  outcome: {node['outcome']}"
     return line

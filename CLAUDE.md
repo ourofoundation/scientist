@@ -18,6 +18,12 @@ selects one by temperature, and every step is remembered across runs. See `READM
   free-running tool loop — that is what ouro-agents is for. Where a model does
   need to run free (research), it goes through `core/agent.py`: read-only
   tools, a turn and cost budget, and a typed result.
+- **A person steers through directives, never by talking to the model.**
+  `scientist/watch.py` writes rows to `directives`; the harness reads them at
+  step boundaries (`_controls`, `_queued_move`, `_await_choice`, steer notes)
+  and records them on the node. The run waits only while a `pause` is held.
+  The harness reports what it is doing through `Search._emit` (the `events`
+  table), which must never be able to fail a run.
 - **A calculation error is "unknown", not a negative result.** Keep that
   distinction visible in every prompt that shows measurements.
 - **Nothing outside `computational/catalog.py` knows which route measures
@@ -38,6 +44,7 @@ selects one by temperature, and every step is remembered across runs. See `READM
 - `scientist/core/llm.py` — OpenRouter client, prompt caching, call records
 - `scientist/computational/` — catalog, GGen explorer, evaluator, Ouro client,
   and `sim.py`, the simulated world behind `--sim`
+- `scientist/watch.py`, `watch.html` — `scientist --watch`: live view and direction
 - `scientist/utils/report.py` — LLM-written report and publishing
 
 ## Essential Commands
@@ -46,6 +53,7 @@ selects one by temperature, and every step is remembered across runs. See `READM
 pip install -e .
 scientist "<goal>" --steps 2
 scientist --sim --steps 10 --oracle   # simulated world: ~1 min, a few cents
+scientist --watch --sim               # live view of the simulated memory
 pytest tests
 ```
 

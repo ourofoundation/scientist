@@ -186,6 +186,11 @@ def main() -> None:
     )
     parser.add_argument("--steps", type=int, help="search steps this run")
     parser.add_argument(
+        "--expensive",
+        type=int,
+        help="expensive (multi-hour) calculations allowed this run",
+    )
+    parser.add_argument(
         "--list", action="store_true", help="list campaigns in memory and exit"
     )
     parser.add_argument("--model", help="OpenRouter model id for this run")
@@ -203,9 +208,26 @@ def main() -> None:
         action="store_true",
         help="with --sim, also report the best result the world contains",
     )
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="serve the live view of this memory (add --sim for the simulated "
+        "one) instead of running; start runs from another terminal",
+    )
+    parser.add_argument("--port", type=int, default=8765, help="port for --watch")
     args = parser.parse_args()
 
     setup_logging()
+    if args.watch:
+        from .watch import serve
+
+        config = ScientistConfig()
+        if args.sim:
+            config.use_sim(args.seed)
+        if args.model:
+            config.llm_model = args.model
+        serve(config.db_path, args.port, config)
+        return
     if args.list:
         config = ScientistConfig()
         if args.sim:
@@ -216,6 +238,8 @@ def main() -> None:
     config = ScientistConfig.from_env(sim=args.sim, sim_seed=args.seed)
     if args.steps:
         config.max_steps = args.steps
+    if args.expensive is not None:
+        config.max_expensive_evals = args.expensive
     if args.model:
         config.llm_model = args.model
     if args.sim:

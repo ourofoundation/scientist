@@ -1,0 +1,1060 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scientist</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f6f6f7; --surface: #ffffff; --sunken: #f1f1f3; --line: #e9e9ed; --line-strong: #d4d4da;
+    --ink: #16161a; --ink-2: #55555f; --ink-3: #8d8d98;
+    --mark: #3a3a42; --mark-soft: #b9b9c2; --accent: #2f5fe8; --accent-soft: #eaf0ff;
+    --bad: #b42318; --warn: #9a5b06; --good: #16673a;
+    --shadow: 0 1px 2px rgba(20, 20, 30, .04), 0 4px 16px rgba(20, 20, 30, .04);
+    --sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --r: 12px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0a0a0c; --surface: #131316; --sunken: #1a1a1f; --line: #222228; --line-strong: #34343c;
+      --ink: #f2f2f4; --ink-2: #a5a5b0; --ink-3: #6f6f7a;
+      --mark: #d6d6dc; --mark-soft: #56565f; --accent: #84a8ff; --accent-soft: #18233f;
+      --bad: #f97066; --warn: #f0b24a; --good: #5fd08c;
+      --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html { -webkit-font-smoothing: antialiased; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 var(--sans); font-feature-settings: "cv11", "ss01"; }
+  .mono { font-family: var(--mono); }
+  .muted { color: var(--ink-3); }
+
+  /* controls */
+  select, button, textarea, input { font: inherit; color: inherit; }
+  select, textarea, input[type=number], input[type=text] { background: var(--surface);
+    border: 1px solid var(--line-strong); border-radius: 8px; padding: 7px 10px;
+    outline: none; transition: border-color .12s, box-shadow .12s; }
+  select:focus, textarea:focus, input:focus { border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft); }
+  input[type=number] { width: 84px; font-family: var(--mono); }
+  input[type=checkbox] { accent-color: var(--ink); width: 15px; height: 15px; margin: 0; }
+  button { background: var(--surface); border: 1px solid var(--line-strong);
+    border-radius: 8px; padding: 7px 12px; cursor: pointer; font-weight: 500;
+    transition: background .12s, border-color .12s; white-space: nowrap; }
+  button:hover { background: var(--sunken); }
+  button.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  button.primary:hover { opacity: .88; background: var(--ink); }
+  button.quiet { border-color: transparent; background: none; color: var(--ink-2); }
+  button.quiet:hover { background: var(--sunken); color: var(--ink); }
+  button.link { border: 0; background: none; padding: 0; color: var(--ink-3);
+    font-weight: 400; text-decoration: underline; text-underline-offset: 2px; }
+  button.link:hover { color: var(--ink); background: none; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1; }
+  .tag { display: inline-flex; align-items: center; font-size: 11.5px; line-height: 1;
+    padding: 4px 8px; border-radius: 999px; background: var(--sunken); color: var(--ink-2);
+    white-space: nowrap; font-weight: 500; }
+  .tag.accent { background: var(--accent-soft); color: var(--accent); }
+  .tag.bad { background: none; box-shadow: inset 0 0 0 1px var(--bad); color: var(--bad); }
+  .tag.warn { background: none; box-shadow: inset 0 0 0 1px var(--warn); color: var(--warn); }
+  .tag.good { background: none; box-shadow: inset 0 0 0 1px var(--good); color: var(--good); }
+  .hint { font-size: 12.5px; color: var(--ink-3); margin: 8px 0 0; }
+  .err { color: var(--bad); font-size: 13px; margin-top: 8px; }
+
+  /* top bar */
+  header { display: flex; gap: 12px; align-items: center; padding: 10px 24px;
+    border-bottom: 1px solid var(--line); background: var(--surface);
+    position: sticky; top: 0; z-index: 4; }
+  header h1 { font-size: 14px; margin: 0 6px 0 0; font-weight: 600; letter-spacing: -.01em; }
+  header select { max-width: min(380px, 40vw); padding: 5px 10px; }
+  header.composing #campaign { display: none; }
+
+  /* page */
+  .page { max-width: 1320px; margin: 0 auto; padding: 0 24px 64px; }
+  .hero { display: flex; gap: 24px; align-items: flex-end; flex-wrap: wrap; padding: 28px 0 20px; }
+  .hero h2 { font-size: 24px; line-height: 1.2; font-weight: 600; letter-spacing: -.02em; margin: 0 0 6px; }
+  .hero p { margin: 0; color: var(--ink-2); max-width: 70ch; }
+  .status { display: inline-flex; align-items: center; gap: 8px; font-size: 13px;
+    color: var(--ink-2); margin-top: 12px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--mark-soft); flex: none; }
+  .live .dot { background: var(--accent); box-shadow: 0 0 0 0 var(--accent); animation: ping 1.6s infinite; }
+  .paused .dot { background: var(--warn); }
+  @keyframes ping { 70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+  .stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); background: var(--surface);
+    border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); margin-bottom: 20px; }
+  .stat { padding: 14px 18px; border-left: 1px solid var(--line); min-width: 0; }
+  .stat:first-child { border-left: 0; }
+  .stat span { display: block; font-size: 12px; color: var(--ink-3); margin-bottom: 4px; }
+  .stat b { font: 500 19px/1.2 var(--mono); letter-spacing: -.02em; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; display: block; }
+  @media (max-width: 900px) { .stats { grid-template-columns: repeat(3, 1fr); }
+    .stat:nth-child(4) { border-left: 0; } .stat:nth-child(n+4) { border-top: 1px solid var(--line); } }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 372px; gap: 20px; align-items: start; }
+  @media (max-width: 1020px) { main { grid-template-columns: 1fr; } }
+  .col { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+  .rail { position: sticky; top: 64px; }
+  @media (max-width: 1020px) { .rail { position: static; } }
+  section { background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--r); padding: 18px 20px; box-shadow: var(--shadow); }
+  section > h2 { font-size: 14px; margin: 0 0 14px; font-weight: 600; letter-spacing: -.01em;
+    display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  section > h2 small { font-weight: 400; font-size: 12.5px; color: var(--ink-3); }
+  .banner { margin: 20px 0 0; padding: 12px 16px; border-radius: var(--r);
+    border: 1px solid var(--bad); color: var(--bad); background: var(--surface); }
+  .banner pre { margin: 8px 0 0; white-space: pre-wrap; font: 12px var(--mono);
+    color: var(--ink-2); max-height: 180px; overflow: auto; }
+
+  /* chart */
+  svg text { fill: var(--ink-3); font: 11px var(--mono); }
+  .chart-scroll { overflow-x: auto; flex: 1; min-width: 0; }
+  .chart-scroll svg { display: block; }
+  .chart-scroll g:hover .colbg, .chart-scroll g:focus-visible .colbg { fill: var(--sunken); }
+  .chart-scroll g { outline: none; }
+  svg text { font-family: var(--mono); }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12.5px;
+    color: var(--ink-2); margin-top: 10px; }
+  .legend svg { vertical-align: -2px; margin-right: 5px; }
+  #tip { position: fixed; pointer-events: none; background: var(--ink); color: var(--bg);
+    padding: 7px 10px; border-radius: 8px; font-size: 12.5px; max-width: 300px;
+    display: none; z-index: 5; white-space: pre-line; box-shadow: 0 6px 20px rgba(0,0,0,.18); }
+  .detail { margin: 16px 0 0; padding-top: 16px; border-top: 1px solid var(--line);
+    display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 8px 16px; }
+  .detail dt { color: var(--ink-3); font-size: 12.5px; }
+  .detail dd { margin: 0; white-space: pre-wrap; font-size: 13.5px; }
+
+  /* current step */
+  .phases { display: flex; align-items: center; gap: 0; margin-bottom: 16px; font-size: 12.5px; }
+  .phase { display: flex; align-items: center; gap: 7px; color: var(--ink-3); }
+  .phase::before { content: ""; width: 7px; height: 7px; border-radius: 50%;
+    border: 1.5px solid var(--line-strong); }
+  .phase + .phase::after { content: ""; order: -1; width: 22px; height: 1px;
+    background: var(--line-strong); margin: 0 8px; }
+  .phase.done { color: var(--ink-2); }
+  .phase.done::before { background: var(--mark); border-color: var(--mark); }
+  .phase.now { color: var(--ink); font-weight: 600; }
+  .phase.now::before { background: var(--accent); border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft); }
+  #reading { color: var(--ink-2); font-size: 13.5px; max-width: 78ch; }
+  #reading:empty { display: none; }
+  #moves:empty::after { content: "Nothing proposed yet."; color: var(--ink-3); font-size: 13px; }
+  .move { padding: 14px 0; border-top: 1px solid var(--line); position: relative; }
+  .move:first-child { margin-top: 14px; }
+  .move.chosen { padding-left: 14px; }
+  .move.chosen::before { content: ""; position: absolute; left: 0; top: 14px; bottom: 14px;
+    width: 3px; border-radius: 2px; background: var(--accent); }
+  .move-head { display: flex; gap: 10px; align-items: center; }
+  .move-head b { font: 500 13.5px var(--mono); }
+  .move-head .num { font: 500 13.5px var(--mono); }
+  .move-head .chance { font-size: 12.5px; color: var(--ink-3); width: 86px; text-align: right; }
+  .bar { height: 4px; background: var(--sunken); border-radius: 2px; overflow: hidden; margin-top: 8px; }
+  .bar i { display: block; height: 100%; background: var(--mark); border-radius: 2px; }
+  .move p { margin: 8px 0 0; color: var(--ink-2); font-size: 13.5px; max-width: 78ch; }
+  .move p.muted { color: var(--ink-3); font-size: 13px; margin-top: 4px; }
+
+  /* tabs */
+  .tabs { display: flex; gap: 4px; margin: -4px 0 14px -8px; }
+  .tabs button { border: 0; background: none; padding: 6px 10px; color: var(--ink-3);
+    border-radius: 8px; font-weight: 500; }
+  .tabs button:hover { color: var(--ink); background: var(--sunken); }
+  .tabs button.on { color: var(--ink); background: var(--sunken); }
+  .tabs small { color: var(--ink-3); font-weight: 400; margin-left: 4px; }
+  .scroll { overflow: auto; max-height: 440px; margin: 0 -20px; padding: 0 20px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: right; padding: 9px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { font-weight: 500; font-size: 12px; color: var(--ink-3); position: sticky; top: 0;
+    background: var(--surface); z-index: 1; }
+  th:first-child, td:first-child { text-align: left; padding-left: 0; }
+  th:last-child, td:last-child { padding-right: 0; }
+  td { font-family: var(--mono); }
+  td:first-child b { font-weight: 500; }
+  td:first-child .muted { margin-right: 8px; }
+  tbody tr:last-child td { border-bottom: 0; }
+  ul.plain { list-style: none; margin: 0; padding: 0; }
+  ul.plain li { padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+  ul.plain li:first-child { padding-top: 0; }
+  ul.plain li:last-child { border-bottom: 0; padding-bottom: 0; }
+  .retracted { text-decoration: line-through; color: var(--ink-3); }
+  .log li { display: flex; gap: 14px; padding: 5px 0 !important; border: 0 !important; font-size: 13px; }
+  .log time { color: var(--ink-3); font: 12px/1.7 var(--mono); flex: none; }
+
+  /* direction + goal */
+  .compose { border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface);
+    transition: border-color .12s, box-shadow .12s; }
+  .compose:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .compose textarea { display: block; width: 100%; min-height: 76px; resize: vertical; border: 0;
+    background: none; box-shadow: none; padding: 11px 12px 4px; }
+  .compose .row { padding: 6px 8px 8px 12px; font-size: 12.5px; color: var(--ink-2); }
+  .compose label { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+  .controls { display: grid; gap: 6px; margin-top: 12px; }
+  .controls button { text-align: left; }
+  #directives:not(:empty) { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+  #directives li { padding: 8px 0; border: 0; }
+  .criteria li { display: flex; justify-content: space-between; gap: 12px; align-items: baseline;
+    padding: 8px 0 !important; font-size: 13px; }
+  .criteria .mono { font-size: 12.5px; }
+  .criteria .t { color: var(--ink-2); white-space: nowrap; font-family: var(--mono); font-size: 12.5px; }
+  pre.reason { white-space: pre-wrap; font: 13px/1.55 var(--sans); margin: 14px 0 0; padding: 12px 14px;
+    color: var(--ink-2); background: var(--sunken); border-radius: 10px; }
+  pre.reason:empty { display: none; }
+  .unblock { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .unblock p { margin: 0 0 12px; font-size: 13.5px; color: var(--ink-2); }
+  .unblock button { width: 100%; }
+  .unblock .hint { margin: 8px 0 0; }
+
+  /* composer */
+  #composer { max-width: 1080px; margin: 0 auto; padding: 36px 24px 72px; }
+  #compose-1 { max-width: 720px; margin: 0 auto; }
+  #composer h2.big { font-size: 26px; font-weight: 600; margin: 0 0 8px; letter-spacing: -.02em; }
+  #composer .lede { color: var(--ink-2); margin: 0 0 22px; max-width: 62ch; font-size: 15px; }
+  #goal-text { width: 100%; min-height: 128px; font-size: 16px; line-height: 1.5; padding: 14px 16px;
+    border-radius: var(--r); resize: vertical; }
+  .examples { display: grid; gap: 6px; margin: 14px 0 22px; }
+  .examples button { font-size: 13px; font-weight: 400; color: var(--ink-2); text-align: left;
+    white-space: normal; border-color: var(--line); background: none; }
+  .examples button:hover { border-color: var(--line-strong); color: var(--ink); }
+  .steps { display: flex; gap: 10px; align-items: center; margin: 0 auto 28px; max-width: 720px;
+    font-size: 12.5px; color: var(--ink-3); }
+  #composer.wide .steps { max-width: none; }
+  .steps b { display: inline-grid; place-items: center; width: 20px; height: 20px;
+    border-radius: 50%; border: 1px solid var(--line-strong); font: 500 11px var(--mono); margin-right: 7px; }
+  .steps .on { color: var(--ink); font-weight: 500; }
+  .steps .on b { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .steps i { width: 32px; height: 1px; background: var(--line-strong); }
+  .review { display: grid; grid-template-columns: minmax(0, 1fr) 312px; gap: 20px; align-items: start; }
+  @media (max-width: 900px) { .review { grid-template-columns: 1fr; } }
+  .field { margin-bottom: 18px; }
+  .field > label { display: block; font-size: 12.5px; color: var(--ink-2); margin-bottom: 6px; font-weight: 500; }
+  .field input[type=text], .field textarea { width: 100%; }
+  .crit { display: grid; grid-template-columns: minmax(200px, 1.6fr) 112px 146px 136px 40px 22px;
+    gap: 10px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+  .crit.head { font-size: 12px; color: var(--ink-3); padding: 0 0 8px; border: 0; }
+  .crit .name { min-width: 0; }
+  .crit .name b { font: 500 13px var(--mono); display: block; overflow-wrap: anywhere; }
+  .crit .name span { font-size: 12.5px; color: var(--ink-3); }
+  .crit select, .crit input[type=number] { padding: 5px 8px; }
+  .crit .unit { font-size: 12px; color: var(--ink-3); margin-left: 6px; }
+  .crit .share { display: flex; align-items: center; gap: 8px; }
+  .crit .share input { width: 60px; }
+  .crit .share .bar { flex: 1; min-width: 26px; margin: 0; }
+  .crit .share small { font: 11px var(--mono); color: var(--ink-3); width: 30px; }
+  @media (max-width: 760px) { .crit { grid-template-columns: 1fr 1fr; } .crit.head { display: none; } }
+  .callout { border-radius: 10px; padding: 12px 14px; margin-bottom: 18px; font-size: 13.5px;
+    box-shadow: inset 0 0 0 1px var(--warn); }
+  .callout b { color: var(--warn); }
+  .callout ul { margin: 6px 0 0; padding-left: 18px; color: var(--ink-2); }
+  .runcard { position: sticky; top: 64px; }
+  .runcard .row { justify-content: space-between; margin-bottom: 10px; font-size: 13.5px; }
+  .runcard p { font-size: 13px; color: var(--ink-2); margin: 14px 0; }
+  .runcard button.primary { width: 100%; padding: 10px; font-weight: 600; }
+  .spin { display: inline-block; width: 12px; height: 12px; border-radius: 50%;
+    border: 2px solid var(--mark-soft); border-top-color: var(--bg);
+    animation: spin .8s linear infinite; vertical-align: -1px; margin-right: 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Scientist</h1>
+  <select id="campaign" aria-label="Campaign"></select>
+  <span id="world" class="tag"></span>
+  <span class="grow"></span>
+  <button id="new-goal" class="primary">New goal</button>
+</header>
+<div id="composer" hidden>
+  <div class="steps">
+    <span id="s1" class="on"><b>1</b>Describe the goal</span><i></i>
+    <span id="s2"><b>2</b>Review the objective</span><i></i>
+    <span id="s3"><b>3</b>Run</span>
+  </div>
+  <div id="compose-1">
+    <h2 class="big">What should the scientist look for?</h2>
+    <p class="lede">Describe the material you want in plain language: what it must do, what it must avoid, and what matters most. You will review how that is measured before anything runs.</p>
+    <textarea id="goal-text" placeholder="e.g. Find a rare-earth-free permanent magnet with high anisotropy, a Curie temperature above 600 K, and cheap raw materials"></textarea>
+    <div class="examples" id="examples"></div>
+    <div class="row">
+      <button class="primary" id="draft">Draft the objective</button>
+      <button class="quiet" id="compose-cancel">Cancel</button>
+      <span class="hint" id="draft-note" style="margin:0 0 0 6px"></span>
+    </div>
+    <div class="err" id="draft-error"></div>
+  </div>
+  <div id="compose-2" hidden>
+    <h2 class="big">Review how the goal will be measured</h2>
+    <p class="lede">The search optimises exactly these criteria, so check the targets and weights. A hard criterion disqualifies a candidate that misses it.</p>
+    <div class="review">
+      <div class="col">
+        <section>
+          <div class="field"><label for="o-title">Title</label><input type="text" id="o-title"></div>
+          <div class="field"><label>Your goal</label><div id="o-goal" class="muted"></div></div>
+          <div id="o-unsupported"></div>
+          <div class="field" style="margin-bottom:0"><label>Criteria</label>
+            <div class="crit head"><span>Property</span><span>Direction</span><span>Target</span><span>Weight</span><span>Hard</span><span></span></div>
+            <div id="o-criteria"></div>
+            <div class="row" style="margin-top:12px">
+              <select id="o-add" aria-label="Add a criterion"></select>
+            </div>
+          </div>
+        </section>
+        <section>
+          <div class="field"><label for="o-required">Every system must contain</label>
+            <input type="text" id="o-required" placeholder="element symbols, e.g. Gd"></div>
+          <div class="field"><label for="o-forbidden">Never use</label>
+            <input type="text" id="o-forbidden" placeholder="element symbols, e.g. Nd, Dy, Co"></div>
+          <div class="field" style="margin:0"><label for="o-notes">Guidance for the search</label>
+            <textarea id="o-notes" style="min-height:120px"></textarea></div>
+        </section>
+      </div>
+      <section class="runcard">
+        <h2>Run</h2>
+        <div class="row"><label for="r-steps">Search steps</label><input type="number" id="r-steps" min="1" max="50"></div>
+        <div class="row" id="r-expensive-row"><label for="r-expensive">Expensive calculations</label><input type="number" id="r-expensive" min="0" max="20"></div>
+        <p id="r-summary"></p>
+        <button class="primary" id="start">Start the search</button>
+        <div class="err" id="start-error"></div>
+        <div class="row" style="margin-top:12px;justify-content:flex-start;gap:16px">
+          <button class="link" id="back">Edit the goal</button>
+          <button class="link" id="compose-cancel-2">Cancel</button>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+<div class="page" id="watch">
+  <div id="runner-error" class="banner" hidden></div>
+  <div class="hero">
+    <div class="grow" style="min-width:0">
+      <h2 id="hero-title">&nbsp;</h2>
+      <p id="hero-goal"></p>
+      <div id="status" class="status"><span class="dot"></span><span id="status-text">loading</span></div>
+    </div>
+    <span class="row" id="more" hidden>
+      <input type="number" id="more-steps" min="1" max="50" aria-label="Steps to run">
+      <button id="more-run">Run more steps</button>
+    </span>
+  </div>
+  <div class="stats" id="stats"></div>
+  <main>
+    <div class="col">
+      <section>
+        <h2>Search path <small id="path-note"></small></h2>
+        <div id="chart"></div>
+        <div class="legend" id="legend"></div>
+        <div id="detail-box" hidden>
+          <dl class="detail" id="detail"></dl>
+          <div class="row" style="margin-top:12px"><b id="detail-title" class="mono" style="font-weight:500;font-size:12.5px;color:var(--ink-3)"></b><span class="grow"></span><button class="link" id="detail-close">close</button></div>
+        </div>
+      </section>
+      <section>
+        <h2><span id="step-title">Current step</span><small id="step-note"></small></h2>
+        <div class="phases" id="phases"></div>
+        <div id="reading"></div>
+        <div id="moves"></div>
+      </section>
+      <section>
+        <div class="tabs" id="tabs" role="tablist">
+          <button data-tab="candidates" class="on" role="tab">Candidates<small id="cand-note"></small></button>
+          <button data-tab="learnings" role="tab">Learnings<small id="learn-note"></small></button>
+          <button data-tab="activity" role="tab">Activity</button>
+        </div>
+        <div data-panel="candidates">
+          <div class="scroll"><table id="candidates"></table></div>
+          <p class="hint">“Measure” queues a step that runs the missing calculations on that candidate.</p>
+        </div>
+        <div data-panel="learnings" hidden><div class="scroll"><ul class="plain" id="learnings"></ul></div></div>
+        <div data-panel="activity" hidden><div class="scroll"><ul class="plain log" id="log"></ul></div></div>
+      </section>
+    </div>
+    <div class="col rail">
+      <section>
+        <h2>Direction</h2>
+        <div class="compose">
+          <textarea id="note" placeholder="Steer the next proposal, e.g. “stay with Fe-rich borides; avoid cobalt above 20%”"></textarea>
+          <div class="row">
+            <label><input type="checkbox" id="sticky"> Keep for every step</label>
+            <span class="grow"></span>
+            <button class="primary" id="send">Send</button>
+          </div>
+        </div>
+        <div class="controls">
+          <button id="pause">Pause at next proposals</button>
+          <button id="grant">Allow one more expensive calculation</button>
+          <button id="stop">Stop after this step</button>
+        </div>
+        <p class="hint">The run never waits unless you pause it. Direction takes effect at the next step.</p>
+        <ul class="plain" id="directives"></ul>
+      </section>
+      <section>
+        <h2>Goal <span id="verdict"></span></h2>
+        <div id="objective"></div>
+        <pre class="reason" id="reason"></pre>
+        <div id="unblock" class="unblock" hidden></div>
+      </section>
+    </div>
+  </main>
+</div>
+<div id="tip"></div>
+<script>
+const $ = id => document.getElementById(id);
+const el = (tag, attrs = {}, ...kids) => {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'class') node.className = v;
+    else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) node.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null) node.append(kid);
+  return node;
+};
+const svg = (tag, attrs = {}, ...kids) => {
+  const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
+    else if (v != null) node.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null) node.append(kid);
+  return node;
+};
+const fmt = (v, digits = 3) => v == null ? '—'
+  : typeof v === 'boolean' ? (v ? 'yes' : 'no')
+  : typeof v === 'number' ? (Number.isInteger(v) ? String(v) : Number(v.toPrecision(digits)).toString())
+  : String(v);
+const VERDICT = {met: 'goal met', not_yet: 'goal not met yet', blocked: 'waiting on expensive calculations'};
+const verdict = status => VERDICT[status] || String(status);
+const duration = s => s < 5400 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`;
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+const api = async (path, body) => {
+  const res = await fetch(path, body ? {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)} : {});
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+};
+
+let campaignId = null, state = null, events = [], lastEvent = null, selectedNode = null;
+
+const target = m => Array.isArray(m.target) ? 'candidates ' + m.target.join(', ') : m.target;
+const describe = n => n.kind === 'evaluate'
+  ? `evaluate ${(n.move.candidate_ids || []).join(', ')}` : `${n.kind} ${n.system || ''}`;
+
+// ---- direction -----------------------------------------------------------
+const direct = async (kind, payload = {}, sticky = false) => {
+  try { await api('/api/directive', {campaign_id: campaignId, kind, payload, sticky}); }
+  catch (e) { alert(e.message); }
+  refresh();
+};
+$('send').onclick = () => {
+  const text = $('note').value.trim();
+  if (!text) return;
+  direct('steer', {text}, $('sticky').checked);
+  $('note').value = '';
+};
+$('grant').onclick = () => direct('grant', {expensive: 1});
+$('stop').onclick = () => { if (confirm('Stop the run after the current step?')) direct('stop'); };
+$('pause').onclick = async () => {
+  const held = pendingOf('pause')[0];
+  if (held) { await api('/api/directive/cancel', {id: held.id}); refresh(); }
+  else direct('pause');
+};
+const pendingOf = kind => (state?.directives || []).filter(d => d.status === 'pending' && d.kind === kind);
+
+// ---- derived view of the step in progress --------------------------------
+function currentStep() {
+  const bounds = ['step_started', 'run_started', 'run_finished'];
+  let start = -1, end = events.length;
+  for (let i = events.length - 1; i >= 0; i--) if (bounds.includes(events[i].kind)) { start = i; break; }
+  // Between runs, keep showing the last step that was taken.
+  let past = false;
+  if (start >= 0 && events[start].kind === 'run_finished') {
+    for (let i = start - 1; i >= 0; i--) if (events[i].kind === 'step_started') { end = start; start = i; past = true; break; }
+  }
+  const slice = start < 0 ? [] : events.slice(start, end);
+  const find = kind => [...slice].reverse().find(e => e.kind === kind);
+  return {slice, find, head: slice[0], last: events[events.length - 1], past};
+}
+function liveStatus() {
+  const step = currentStep(), last = step.last;
+  if (!last) return {cls: '', text: 'no activity recorded yet'};
+  const age = (Date.now() - new Date(last.created_at).getTime()) / 1000;
+  const ago = age < 90 ? `${Math.round(age)}s ago` : `${Math.round(age / 60)} min ago`;
+  if (last.kind === 'run_finished')
+    return {cls: '', text: `run finished · ${verdict(last.data.status)} · ${ago}`};
+  if (step.find('paused') && !step.find('resumed'))
+    return {cls: 'paused', text: 'paused — waiting for your choice'};
+  const d = last.data || {};
+  const text = {
+    run_started: 'starting', judged: 'judging the goal', step_started: 'starting a step',
+    research_started: 'researching', research_done: 'proposing moves', proposed: 'selecting a move',
+    selected: 'starting the move', exploring: `exploring ${d.system}`,
+    explored: `triaging ${d.candidates} candidates`, triaged: 'measuring',
+    measuring: `measuring ${(d.properties || []).join(', ')} on ${d.formula}`,
+    measured: 'measuring', step_done: 'reflecting', reflected: 'finishing the step',
+    resumed: 'starting the move',
+  }[last.kind] || 'working';
+  return {cls: 'live', text: `${text} · last update ${ago}`};
+}
+
+// ---- render ----------------------------------------------------------------
+function render() {
+  if (!state) return;
+  const c = state.campaign, st = liveStatus();
+  $('status').className = 'status ' + st.cls;
+  $('hero-title').textContent = state.objective ? state.objective.title : 'Untitled campaign';
+  $('hero-goal').textContent = c.goal;
+  $('status-text').textContent = st.text;
+  const step = currentStep();
+  const started = [...events].reverse().find(e => e.kind === 'run_started');
+  const stepEvent = step.find('step_started');
+  const expensive = ([...events].reverse().find(e => e.data && e.data.expensive_left != null) || {data: {}}).data.expensive_left;
+  const stats = [
+    ['Best score', c.best_score.toFixed(3)],
+    ['Steps', stepEvent && started && st.cls
+      ? `${stepEvent.data.index + 1} of ${started.data.max_steps}` : String(c.steps_done)],
+    ['Temperature', stepEvent ? fmt(stepEvent.data.temperature, 2) : '—'],
+    ['Expensive left', expensive == null ? '—' : String(expensive)],
+    ['Model cost', '$' + state.costs.llm_usd.toFixed(2)],
+    [`Compute · ${plural(state.costs.route_calls, 'run')}`, duration(state.costs.route_seconds)],
+  ];
+  $('stats').replaceChildren(...stats.map(([k, v]) => el('div', {class: 'stat'}, el('span', {}, k), el('b', {}, v))));
+  const option = $('campaign').selectedOptions[0];
+  if (option && state.objective) option.textContent = `${state.objective.title} (${c.steps_done} steps)`;
+  const runner = state.runner || {}, live = st.cls !== '' || runner.running;
+  $('more').hidden = live || !info || !info.can_run;
+  $('runner-error').hidden = !(runner.exit_code && !runner.running);
+  if (!$('runner-error').hidden) $('runner-error').replaceChildren(
+    `The last run stopped with an error (exit code ${runner.exit_code}). Log: ${runner.log}`,
+    el('pre', {}, runner.log_tail || ''));
+  renderChart(); renderStep(step); renderGoal(); renderCandidates();
+  renderDirectives(); renderLearnings(); renderLog(); renderDetail();
+}
+
+// What a step did, in two short lines for the axis.
+function stepLabel(nd) {
+  if (nd.kind !== 'evaluate') return [nd.kind, nd.system || ''];
+  const names = (nd.move.candidate_ids || [])
+    .map(id => (state.candidates.find(c => c.id === id) || {}).formula).filter(Boolean);
+  return ['measure', names.length ? names[0] + (names.length > 1 ? ` +${names.length - 1}` : '') : ''];
+}
+const clip = (text, n) => text.length > n ? text.slice(0, n - 1) + '…' : text;
+let chartSteps = -1;
+
+function renderChart() {
+  const nodes = state.nodes, box = $('chart');
+  if (!nodes.length) {
+    box.replaceChildren(el('p', {class: 'muted'}, 'No steps taken yet.'));
+    $('path-note').textContent = ''; $('legend').replaceChildren();
+    return;
+  }
+  // Each step's score as it stood when the step finished, not as revised later.
+  const at = nd => nd.first_score ?? nd.score;
+  const predictedOf = nd => nd.move.selected_by === 'researcher' && !nd.move.predicted_score ? null : nd.move.predicted_score;
+  const settled = nd => nd.status === 'ok';
+
+  const AXIS = 44, width = (box.clientWidth || 760) - AXIS, m = {l: 6, r: 14, t: 30, b: 62}, H = 330;
+  const col = Math.max(92, Math.min(140, (width - m.l - m.r) / nodes.length));
+  const W = Math.max(width, m.l + m.r + col * nodes.length), ih = H - m.t - m.b;
+
+  // Zoom the score axis to where the results are; unsettled steps sit in a lane below.
+  const values = nodes.flatMap(nd => [settled(nd) ? at(nd) : null, nd.status !== 'failed' ? predictedOf(nd) : null])
+    .filter(v => v != null);
+  let lo = values.length ? Math.floor(Math.min(...values) * 10 - 1e-9) / 10 : 0;
+  let hi = values.length ? Math.ceil(Math.max(...values) * 10 + 1e-9) / 10 : 1;
+  hi = Math.min(1, Math.max(hi, lo + 0.1));
+  if (hi - lo < 0.3) lo = Math.max(0, hi - 0.3);
+  const x = i => m.l + col * (i + 0.5);
+  const y = v => m.t + ih * (1 - (Math.max(lo, Math.min(hi, v)) - lo) / (hi - lo));
+  const lane = m.t + ih + 16;
+
+  const root = svg('svg', {width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: 'img',
+    'aria-label': 'Score reached by each search step, with the score predicted beforehand and the best so far'});
+  // The score axis stays put while the steps scroll under it.
+  const axis = svg('svg', {width: AXIS, height: H, viewBox: `0 0 ${AXIS} ${H}`, 'aria-hidden': 'true', style: 'flex:none'});
+  const ticks = Math.round((hi - lo) * 10);
+  for (let t = 0; t <= ticks; t += ticks > 6 ? 2 : 1) {
+    const v = lo + t / 10;
+    root.append(svg('line', {x1: 0, x2: W, y1: y(v), y2: y(v), stroke: 'var(--line)'}));
+    axis.append(svg('text', {x: AXIS - 10, y: y(v) + 4, 'text-anchor': 'end'}, v.toFixed(1)));
+  }
+  axis.append(svg('text', {x: AXIS - 10, y: 14, 'text-anchor': 'end'}, 'score'));
+
+  // Best so far, stepping up where a step improved on it.
+  let best = null, path = '', bestStep = 0;
+  nodes.forEach((nd, i) => {
+    if (settled(nd) && (best == null || at(nd) > best)) { best = at(nd); bestStep = i + 1; }
+    if (best == null) return;
+    path += `${path ? 'L' : 'M'}${x(i) - col / 2},${y(best)} L${x(i) + col / 2},${y(best)} `;
+  });
+  if (path) root.append(
+    svg('path', {d: path, fill: 'none', stroke: 'var(--accent)', 'stroke-width': 2, 'stroke-linejoin': 'round', opacity: .55}));
+
+  let running = 0;
+  nodes.forEach((nd, i) => {
+    const cx = x(i), predicted = predictedOf(nd), pending = nd.status === 'pending';
+    const improved = settled(nd) && at(nd) > running;
+    if (settled(nd)) running = Math.max(running, at(nd));
+    const byHuman = nd.move.selected_by === 'researcher';
+    const [kind, what] = stepLabel(nd), hits = [];
+    const result = pending ? 'in progress' : nd.status === 'failed' ? 'failed'
+      : nd.status === 'empty' ? 'nothing found' : `reached ${at(nd).toFixed(3)}`;
+    const g = svg('g', {style: 'cursor:pointer', tabindex: 0, role: 'button', 'aria-label': `Step ${i + 1}: ${kind} ${what}, ${result}`,
+      onclick: () => { selectedNode = selectedNode === nd.id ? null : nd.id; render(); },
+      onkeydown: e => { if (e.key === 'Enter') { selectedNode = nd.id; render(); } },
+      onmousemove: e => tip(e, `Step ${i + 1} · ${kind} ${what}\n${result}`
+        + (predicted != null ? ` · predicted ${predicted.toFixed(2)}` : '')
+        + (improved ? '\nnew best' : '') + (byHuman ? '\nchosen by you' : '')
+        + (nd.score !== at(nd) && settled(nd) ? `\nnow ${nd.score.toFixed(3)} after later measurements` : '')
+        + '\nclick for details'),
+      onmouseleave: () => tip()});
+    g.append(svg('rect', {x: cx - col / 2 + 3, y: m.t - 14, width: col - 6, height: H - m.t + 8, rx: 8,
+      fill: nd.id === selectedNode ? 'var(--sunken)' : 'transparent', class: 'colbg'}));
+
+    if (settled(nd) || pending) {
+      const cy = y(pending ? (predicted ?? lo) : at(nd));
+      if (predicted != null && !pending) g.append(
+        svg('line', {x1: cx, x2: cx, y1: y(predicted), y2: cy, stroke: 'var(--mark-soft)', 'stroke-width': 1.5}),
+        svg('circle', {cx, cy: y(predicted), r: 4, fill: 'var(--surface)', stroke: 'var(--mark-soft)', 'stroke-width': 1.5}));
+      const dot = svg('circle', {cx, cy, r: 6.5, 'stroke-width': 2,
+        fill: pending ? 'var(--surface)' : improved ? 'var(--accent)' : 'var(--mark)',
+        stroke: pending ? 'var(--accent)' : 'var(--surface)'});
+      if (pending) dot.append(svg('animate', {attributeName: 'opacity', values: '1;.25;1', dur: '1.4s', repeatCount: 'indefinite'}));
+      g.append(dot);
+      // Hovering a dot itself says which of the two numbers it is.
+      const explain = (cyDot, text) => hits.push(svg('circle', {cx, cy: cyDot, r: 11, fill: 'transparent',
+        onmousemove: e => { e.stopPropagation(); tip(e, text); }}));
+      if (predicted != null) explain(y(predicted), `Predicted score: ${predicted.toFixed(2)}\n`
+        + `What the model expected step ${i + 1} to reach, before it ran.`
+        + (pending ? '' : `\nIt reached ${at(nd).toFixed(3)} (${at(nd) >= predicted ? '+' : '−'}${Math.abs(at(nd) - predicted).toFixed(2)}).`));
+      if (!pending) explain(cy, `Score reached: ${at(nd).toFixed(3)}\n`
+        + `The best candidate's score when step ${i + 1} finished.`
+        + (improved ? '\nA new best for the campaign.' : '')
+        + (nd.score !== at(nd) ? `\nNow ${nd.score.toFixed(3)} after later measurements.` : ''));
+      // Direct labels only where they earn their place: new bests and the latest step.
+      if (!pending && (improved || i === nodes.length - 1)) {
+        const above = predicted == null || predicted <= at(nd);
+        g.append(svg('text', {x: cx, y: cy + (above ? -12 : 20), 'text-anchor': 'middle', style: 'fill:var(--ink);font-weight:500'}, at(nd).toFixed(2)));
+      }
+    } else {
+      g.append(svg('text', {x: cx, y: lane - 26, 'text-anchor': 'middle',
+        style: `fill:var(${nd.status === 'failed' ? '--bad' : '--ink-3'})`}, nd.status === 'failed' ? '× failed' : 'nothing found'));
+    }
+    if (byHuman) g.append(svg('text', {x: cx, y: m.t - 2, 'text-anchor': 'middle', style: 'fill:var(--ink-2)'}, 'you'));
+    const chars = Math.floor((col - 10) / 6.8);
+    g.append(svg('text', {x: cx, y: lane + 6, 'text-anchor': 'middle'}, clip(`${i + 1} · ${kind}`, chars)),
+      svg('text', {x: cx, y: lane + 22, 'text-anchor': 'middle', style: 'fill:var(--ink);font-weight:500'}, clip(what, chars)));
+    g.append(...hits);
+    root.append(g);
+  });
+
+  const scroller = el('div', {class: 'chart-scroll'});
+  scroller.append(root);
+  const old = box.querySelector('.chart-scroll'), keep = old && old.scrollLeft;
+  box.replaceChildren(el('div', {style: 'display:flex'}, axis, scroller));
+  // Follow the newest step when one is added; otherwise stay where the reader scrolled.
+  scroller.scrollLeft = chartSteps === nodes.length && keep != null ? keep : W;
+  chartSteps = nodes.length;
+
+  $('path-note').textContent = `${plural(nodes.length, 'step')} over ${plural(state.runs.length, 'run')}`
+    + (best != null ? ` · best ${best.toFixed(3)} at step ${bestStep}` : '');
+  const key = (shape, label) => el('span', {}, shape, label);
+  const mini = (...kids) => svg('svg', {width: 18, height: 12, viewBox: '0 0 18 12'}, ...kids);
+  $('legend').replaceChildren(
+    key(mini(svg('circle', {cx: 9, cy: 6, r: 4.5, fill: 'var(--mark)'})), 'score the step reached'),
+    key(mini(svg('circle', {cx: 9, cy: 6, r: 4.5, fill: 'var(--accent)'})), 'new best'),
+    key(mini(svg('circle', {cx: 9, cy: 6, r: 3.5, fill: 'var(--surface)', stroke: 'var(--mark-soft)', 'stroke-width': 1.5})), 'score predicted beforehand'),
+    key(mini(svg('line', {x1: 1, x2: 17, y1: 6, y2: 6, stroke: 'var(--accent)', 'stroke-width': 2, opacity: .55})), 'best so far'));
+}
+addEventListener('resize', () => { if (state) renderChart(); });
+
+function renderStep(step) {
+  const order = [['research', ['research_started']], ['propose', ['research_done']],
+    ['select', ['proposed', 'paused', 'resumed']], ['run', ['selected', 'exploring', 'explored', 'triaged', 'measuring', 'measured']],
+    ['reflect', ['step_done']], ['done', ['reflected']]];
+  const inStep = step.head && step.head.kind === 'step_started';
+  let reached = -1;
+  if (inStep) for (const e of step.slice) order.forEach(([, kinds], i) => { if (kinds.includes(e.kind)) reached = Math.max(reached, i); });
+  const finished = reached === order.length - 1;
+  $('phases').replaceChildren(...order.slice(0, 5).map(([name], i) =>
+    el('span', {class: 'phase ' + (i < reached || finished ? 'done' : i === reached ? 'now' : '')}, name)));
+  $('step-title').textContent = inStep ? `${step.past ? 'Last step · ' : ''}Step ${step.head.data.step + 1}` : 'Current step';
+  $('phases').hidden = !inStep || step.past;
+  const proposed = inStep && step.find('proposed'), selected = inStep && step.find('selected');
+  const paused = inStep && step.find('paused') && !step.find('resumed');
+  $('step-note').textContent = !inStep ? 'no step in progress' : paused ? 'paused: pick a move, or resume to let the harness choose'
+    : selected ? `chosen by ${selected.data.by === 'researcher' ? 'you' : 'temperature'}` : '';
+  $('reading').textContent = proposed ? proposed.data.reading : '';
+  const rows = [];
+  if (proposed) proposed.data.moves.forEach((mv, i) => {
+    const chosen = selected && selected.data.index === i;
+    rows.push(el('div', {class: 'move' + (chosen ? ' chosen' : '')},
+      el('div', {class: 'move-head'},
+        el('span', {class: 'tag'}, mv.kind),
+        el('b', {}, target(mv)),
+        chosen ? el('span', {class: 'tag accent'}, step.past ? 'chosen' : 'running') : null,
+        el('span', {class: 'grow'}),
+        paused ? el('button', {onclick: () => direct('choose', {index: i})}, 'Run this') : null,
+        el('span', {class: 'num', title: 'predicted score'}, fmt(mv.predicted_score, 2)),
+        el('span', {class: 'chance'}, `${Math.round(mv.probability * 100)}% chance`)),
+      el('div', {class: 'bar', title: 'predicted score'}, el('i', {style: `width:${mv.predicted_score * 100}%`})),
+      el('p', {}, mv.rationale),
+      el('p', {class: 'muted'}, 'Expects: ' + mv.prediction)));
+  });
+  else if (selected) rows.push(el('div', {class: 'move chosen'}, el('div', {class: 'move-head'},
+    el('span', {class: 'tag'}, selected.data.move.kind),
+    el('b', {}, target(selected.data.move)),
+    el('span', {class: 'tag accent'}, 'requested by you'))));
+  if (inStep) {
+    const measured = step.slice.filter(e => e.kind === 'measured');
+    if (measured.length) rows.push(el('p', {class: 'hint'}, 'Measured this step: ' + measured.map(e =>
+      `${e.data.formula} → ${fmt(e.data.score)}${e.data.errors.length ? ' (' + e.data.errors.join(', ') + ' not measured)' : ''}`).join(' · ')));
+  }
+  $('moves').replaceChildren(...rows);
+}
+
+function renderGoal() {
+  const o = state.objective;
+  const judged = [...events].reverse().find(e => e.kind === 'judged' || e.kind === 'run_finished');
+  const status = judged ? judged.data.status : null;
+  $('verdict').replaceChildren(status ? el('span', {class: 'tag ' + ({met: 'good', blocked: 'warn'}[status] || '')},
+    {met: 'met', not_yet: 'not met yet', blocked: 'needs expensive calculations'}[status] || status) : '');
+  $('reason').textContent = judged ? judged.data.reason : '';
+  renderUnblock(status);
+  if (!o) return $('objective').replaceChildren(el('p', {class: 'muted'}, 'Objective not compiled yet.'));
+  $('objective').replaceChildren(
+    el('ul', {class: 'plain criteria'}, o.criteria.map(cr => el('li', {},
+      el('span', {}, el('span', {class: 'mono'}, cr.property), ' ',
+        cr.hard ? el('span', {class: 'tag'}, 'hard') : null, ' ',
+        cr.tier === 'expensive' ? el('span', {class: 'tag'}, 'expensive') : null),
+      el('span', {class: 't'}, cr.direction === 'require_true' ? 'must be true'
+        : `${cr.direction === 'maximize' ? '≥' : '≤'} ${fmt(cr.target)} ${cr.unit}`)))));
+}
+
+// Candidates that could still beat the best fully measured one, but only
+// once an expensive property is measured: what a blocked goal is waiting on.
+function waitingOnExpensive() {
+  const o = state.objective;
+  if (!o) return [];
+  const expensive = new Set(o.criteria.filter(c => c.tier === 'expensive').map(c => c.property));
+  const proven = Math.max(0, ...state.candidates.filter(c => c.complete).map(c => c.score));
+  const seen = new Set();
+  return state.candidates.filter(c => c.evaluated && !c.complete && c.ceiling > proven
+    && (c.missing || []).some(p => expensive.has(p))
+    && !seen.has(c.identity || c.id) && seen.add(c.identity || c.id));
+}
+function renderUnblock(status) {
+  const box = $('unblock'), waiting = waitingOnExpensive();
+  const live = liveStatus().cls !== '' || (state.runner || {}).running;
+  box.hidden = status !== 'blocked' || live || !waiting.length || !info || !info.can_run;
+  if (box.hidden) return;
+  const count = Math.min(waiting.length, 20);
+  const steps = Math.ceil(count / info.defaults.expensive_per_step) + 1;
+  box.replaceChildren(
+    el('p', {}, `The last run used up its expensive calculations. ${plural(waiting.length, 'candidate')} `
+      + `could still beat the best result once measured: ${waiting.slice(0, 6).map(c => c.formula).join(', ')}`
+      + `${waiting.length > 6 ? '…' : ''}.`),
+    el('button', {class: 'primary', onclick: async () => {
+      if (!info.sim && !confirm(`Start a run with up to ${plural(count, 'expensive calculation')}? `
+        + 'Each is a multi-hour calculation on Ouro.')) return;
+      try { await api('/api/runs', {campaign_id: campaignId, steps, expensive: count}); }
+      catch (e) { alert(e.message); }
+      refresh();
+    }}, `Measure ${count === 1 ? 'it' : `all ${count}`} in a new run`),
+    el('p', {class: 'hint'}, info.sim ? 'Simulated world: these calculations are instant and free.'
+      : `Up to ${plural(steps, 'step')}. Each expensive calculation is a multi-hour job on Ouro.`));
+}
+
+function renderCandidates() {
+  const o = state.objective, props = o ? o.criteria.map(c => c.property) : [];
+  const rows = state.candidates.filter(c => c.evaluated).slice(0, 40);
+  $('cand-note').textContent = `${rows.length} of ${state.candidates.length}`;
+  const head = el('tr', {}, ['candidate', 'score', 'up to', ...props, ''].map(h => el('th', {}, h)));
+  const body = rows.map(c => el('tr', {},
+    el('td', {}, el('span', {class: 'muted'}, c.id), el('b', {}, c.formula), ' ', c.complete ? el('span', {class: 'tag good'}, 'complete') : null),
+    el('td', {}, c.score.toFixed(3)), el('td', {}, c.complete ? '' : c.ceiling.toFixed(3)),
+    props.map(p => el('td', {title: c.errors.includes(p) ? 'calculation errored: not measured' : ''},
+      c.errors.includes(p) ? el('span', {class: 'tag bad'}, 'error') : fmt(c.properties[p]))),
+    el('td', {}, c.missing && c.missing.length ? el('button', {class: 'link',
+      title: 'queue: measure ' + c.missing.join(', '),
+      onclick: () => direct('queue', {kind: 'evaluate', candidate_ids: [c.id], properties: c.missing})}, 'Measure') : '')));
+  $('candidates').replaceChildren(el('thead', {}, head), el('tbody', {}, body));
+}
+
+function renderDirectives() {
+  $('pause').textContent = pendingOf('pause').length ? 'Resume (stop pausing)' : 'Pause at next proposals';
+  const label = d => ({steer: d.payload.text, pause: 'Pause at each step’s proposals',
+    queue: `Run next: ${d.payload.kind} ${d.payload.chemical_system || 'candidates ' + (d.payload.candidate_ids || []).join(', ')}`,
+    stop: 'Stop after the current step', grant: `Allow ${d.payload.expensive} more expensive calculation(s)`,
+    choose: `Run proposal ${d.payload.index + 1}`})[d.kind] || d.kind;
+  const recent = state.directives.filter(d => d.kind !== 'choose' || d.status !== 'applied').slice(-8).reverse();
+  $('directives').replaceChildren(...recent.map(d => el('li', {},
+    el('div', {class: 'row'},
+      el('span', {class: 'tag ' + ({pending: 'accent', rejected: 'bad', applied: 'good'}[d.status] || '')},
+        d.status === 'pending' ? (d.sticky ? 'active' : 'waiting') : d.status),
+      el('span', {style: 'flex:1'}, label(d)),
+      d.status === 'pending' ? el('button', {class: 'link',
+        onclick: async () => { await api('/api/directive/cancel', {id: d.id}); refresh(); }}, 'cancel') : null),
+    d.note ? el('div', {class: 'hint'}, d.note) : null,
+    d.node_id ? el('div', {class: 'hint'}, `applied at node #${d.node_id}`) : null)));
+}
+
+function renderLearnings() {
+  const list = [...state.learnings].reverse();
+  $('learn-note').textContent = String(list.filter(l => !l.retracted).length);
+  $('learnings').replaceChildren(...list.map(l => el('li', {},
+    el('div', {class: l.retracted ? 'retracted' : ''}, l.text),
+    el('div', {class: 'hint row'}, `node #${l.node_id ?? '—'}`,
+      l.retracted ? `retracted${l.retracted_reason ? ': ' + l.retracted_reason : ''}`
+        : el('button', {class: 'link', onclick: async () => {
+            const reason = prompt('Why is this learning wrong? It will be removed from the record the model sees.');
+            if (reason === null) return;
+            await api('/api/learning/retract', {id: l.id, reason}); refresh();
+          }}, 'retract')))));
+}
+
+function renderLog() {
+  const line = e => { const d = e.data || {}; return ({
+    run_started: `Run started · up to ${d.max_steps} steps · ${d.model}`,
+    judged: `Judged: ${verdict(d.status)}`,
+    step_started: `Step ${d.step + 1} started at temperature ${fmt(d.temperature, 2)}`,
+    research_started: 'Research started', research_done: d.brief ? 'Research brief ready' : 'No research brief',
+    proposed: `${(d.moves || []).length} moves proposed`,
+    paused: 'Paused for your choice', resumed: d.chosen ? 'You chose a move' : 'Resumed without a choice',
+    selected: d.move ? `Chose ${d.move.kind} ${target(d.move)} (${d.by === 'researcher' ? 'you' : 'temperature'})` : '',
+    exploring: `Exploring ${d.system}`, explored: `${d.candidates} candidates found in ${d.system}`,
+    triaged: `Picked ${(d.picks || []).map(p => p.formula).join(', ') || 'nothing'} to measure`,
+    measuring: `Measuring ${(d.properties || []).join(', ')} on ${d.formula}`,
+    measured: `${d.formula} scored ${fmt(d.score)}${(d.errors || []).length ? ` · not measured: ${d.errors.join(', ')}` : ''}`,
+    step_done: `Step ${d.status}${d.status === 'ok' ? ` · score ${fmt(d.score)}` : ''}${d.improved ? ' · new best' : ''}${d.error ? ' · ' + d.error : ''}`,
+    reflected: `Reflected · ${(d.learnings || []).length} learnings`,
+    directive_added: `You: ${d.kind}${d.payload && d.payload.text ? ' — ' + d.payload.text : ''}`,
+    directive_applied: `Applied your ${d.kind}`, directive_rejected: `Your ${d.kind} was rejected: ${d.why}`,
+    directive_cancelled: `You cancelled a ${d.kind}`, learning_retracted: 'You retracted a learning',
+    run_finished: `Run finished · ${verdict(d.status)}${d.stopped_by_researcher ? ' · stopped by you' : ''}`,
+  })[e.kind] || e.kind; };
+  $('log').replaceChildren(...events.slice(-80).reverse().map(e => el('li', {},
+    el('time', {}, new Date(e.created_at).toLocaleTimeString()), el('span', {}, line(e)))));
+}
+
+function renderDetail() {
+  const nd = state.nodes.find(n => n.id === selectedNode);
+  $('detail-box').hidden = !nd;
+  if (!nd) return;
+  $('detail-title').textContent = `Step ${state.nodes.indexOf(nd) + 1} · ${stepLabel(nd).join(' ')} · node #${nd.id}`;
+  const item = (k, v) => v ? [el('dt', {}, k), el('dd', {}, v)] : [];
+  $('detail').replaceChildren(...[
+    item('Result', `${nd.status}${nd.status === 'ok' ? ` · score ${fmt(nd.score)}` : ''} · predicted ${fmt(nd.move.predicted_score, 2)}${nd.accepted ? ' · new best' : ''}`),
+    item('Chosen by', nd.move.selected_by === 'researcher' ? 'you' : 'temperature' + (nd.temperature ? ` (T = ${fmt(nd.temperature, 2)})` : '')),
+    item('Your direction', (nd.move.directives || []).filter(d => d.text).map(d => d.text).join('\n')),
+    item('Why', nd.move.rationale), item('Expected', nd.move.prediction),
+    item('Outcome', nd.outcome), item('Error', nd.error),
+    item('Not taken', (nd.move.alternatives || []).map(a => `${a.kind} ${target(a)} (predicted ${fmt(a.predicted_score, 2)})`).join('\n')),
+    item('Research brief', nd.research),
+  ].flat());
+}
+$('detail-close').onclick = () => { selectedNode = null; render(); };
+$('tabs').onclick = e => {
+  const tab = e.target.closest('button')?.dataset.tab;
+  if (!tab) return;
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+  document.querySelectorAll('[data-panel]').forEach(p => { p.hidden = p.dataset.panel !== tab; });
+};
+
+function tip(e, text) {
+  const t = $('tip');
+  if (!text) return t.style.display = 'none';
+  t.textContent = text; t.style.display = 'block';
+  t.style.left = Math.min(e.clientX + 14, innerWidth - 320) + 'px';
+  t.style.top = e.clientY + 14 + 'px';
+}
+
+// ---- new goal ------------------------------------------------------------
+let info = null, draftGoal = '', draft = null;
+const EXAMPLES = [
+  'Find a rare-earth-free permanent magnet with high magnetic anisotropy, a Curie temperature above 600 K, and cheap raw materials',
+  'Find a Gd-based permanent magnet with a Curie temperature well above room temperature',
+  'Find a cheap, thermodynamically stable ferromagnet with the highest saturation magnetization you can',
+];
+const symbols = text => [...new Set((text.match(/[A-Z][a-z]?/g) || []))];
+const spec = name => info.catalog.find(p => p.name === name) || {name, unit: '', tier: '', description: ''};
+
+function showComposer(open) {
+  $('composer').hidden = !open;
+  $('watch').hidden = open;
+  document.querySelector('header').classList.toggle('composing', open);
+  $('new-goal').hidden = open;
+  if (open) { composeStep(1); $('goal-text').focus(); }
+}
+function composeStep(n) {
+  $('compose-1').hidden = n !== 1; $('compose-2').hidden = n !== 2;
+  $('composer').classList.toggle('wide', n === 2);
+  $('s1').className = 'on'; $('s2').className = n >= 2 ? 'on' : ''; $('s3').className = '';
+}
+$('new-goal').onclick = () => showComposer(true);
+$('compose-cancel').onclick = $('compose-cancel-2').onclick = () => { if (campaignId != null) showComposer(false); };
+$('back').onclick = () => composeStep(1);
+$('examples').replaceChildren(...EXAMPLES.map(text => el('button', {onclick: () => { $('goal-text').value = text; $('goal-text').focus(); }}, text)));
+
+$('draft').onclick = async () => {
+  const goal = $('goal-text').value.trim();
+  $('draft-error').textContent = '';
+  if (goal.length < 10) return $('draft-error').textContent = 'Describe the goal in a sentence or two.';
+  $('draft').disabled = true;
+  $('draft').replaceChildren(el('span', {class: 'spin'}), 'Drafting…');
+  try {
+    const res = await api('/api/objective/compile', {goal});
+    if (res.existing_campaign) {
+      $('draft-error').textContent = 'A campaign for this exact goal already exists; opening it.';
+      await loadCampaigns(res.existing_campaign);
+      return showComposer(false);
+    }
+    draftGoal = goal; draft = res.objective;
+    $('r-steps').value = info.defaults.steps; $('r-expensive').value = info.defaults.expensive;
+    renderDraft(); composeStep(2);
+  } catch (e) { $('draft-error').textContent = e.message; }
+  finally { $('draft').disabled = false; $('draft').textContent = 'Draft the objective'; }
+};
+
+function renderDraft() {
+  $('o-title').value = draft.title;
+  $('o-goal').textContent = draftGoal;
+  $('o-required').value = draft.required_elements.join(', ');
+  $('o-forbidden').value = draft.forbidden_elements.join(', ');
+  $('o-notes').value = draft.notes;
+  $('o-unsupported').replaceChildren(draft.unsupported.length ? el('div', {class: 'callout'},
+    el('b', {}, 'Not measurable here. '), 'These parts of your goal will not influence the search:',
+    el('ul', {}, draft.unsupported.map(u => el('li', {}, u)))) : '');
+  renderCriteria();
+}
+function renderCriteria() {
+  const total = draft.criteria.reduce((sum, c) => sum + (Number(c.weight) || 0), 0) || 1;
+  $('o-criteria').replaceChildren(...draft.criteria.map((c, i) => {
+    const p = spec(c.property);
+    const share = el('i', {style: `width:${100 * c.weight / total}%`}), pct = el('small', {}, Math.round(100 * c.weight / total) + '%');
+    const refreshShares = () => renderShares();
+    return el('div', {class: 'crit', 'data-i': i},
+      el('div', {class: 'name'}, el('b', {}, c.property),
+        el('span', {}, p.description), ' ', p.tier === 'expensive' ? el('span', {class: 'tag warn'}, 'expensive') : null),
+      p.boolean ? el('span', {class: 'muted'}, 'must be true')
+        : el('select', {'aria-label': 'Direction', onchange: e => { c.direction = e.target.value; }},
+            ['maximize', 'minimize'].map(d => el('option', {value: d, selected: c.direction === d}, d))),
+      p.boolean ? el('span') : el('span', {}, el('input', {type: 'number', step: 'any', min: 0, value: c.target ?? '',
+        'aria-label': 'Target', oninput: e => { c.target = e.target.value === '' ? null : Number(e.target.value); }}),
+        el('span', {class: 'unit'}, p.unit)),
+      el('span', {class: 'share'}, el('input', {type: 'number', step: 'any', min: 0, value: c.weight, 'aria-label': 'Weight',
+        oninput: e => { c.weight = Number(e.target.value) || 0; refreshShares(); }}),
+        el('span', {class: 'bar'}, share), pct),
+      el('input', {type: 'checkbox', checked: c.hard, 'aria-label': 'Hard constraint', onchange: e => { c.hard = e.target.checked; }}),
+      el('button', {class: 'link', title: 'Remove this criterion', 'aria-label': 'Remove', onclick: () => { draft.criteria.splice(i, 1); renderCriteria(); }}, '×'));
+  }));
+  const used = new Set(draft.criteria.map(c => c.property));
+  const free = info.catalog.filter(p => !used.has(p.name));
+  $('o-add').hidden = !free.length;
+  $('o-add').replaceChildren(el('option', {value: ''}, '+ Add a criterion…'),
+    ...free.map(p => el('option', {value: p.name}, `${p.name} — ${p.description}`)));
+  renderRunSummary();
+}
+function renderShares() {
+  const total = draft.criteria.reduce((sum, c) => sum + (Number(c.weight) || 0), 0) || 1;
+  document.querySelectorAll('#o-criteria .crit').forEach((row, i) => {
+    const w = draft.criteria[i].weight || 0;
+    row.querySelector('.share i').style.width = 100 * w / total + '%';
+    row.querySelector('.share small').textContent = Math.round(100 * w / total) + '%';
+  });
+}
+$('o-add').onchange = e => {
+  const p = spec(e.target.value);
+  if (!e.target.value) return;
+  draft.criteria.push(p.boolean
+    ? {property: p.name, direction: 'require_true', target: null, weight: 1, hard: false}
+    : {property: p.name, direction: 'maximize', target: null, weight: 1, hard: false});
+  renderCriteria();
+};
+function renderRunSummary() {
+  const steps = Number($('r-steps').value) || 0, expensive = Number($('r-expensive').value) || 0;
+  const usesExpensive = draft && draft.criteria.some(c => spec(c.property).tier === 'expensive');
+  $('r-summary').textContent = info.sim
+    ? `Simulated world (seed ${info.seed}): calculations are instant and free. Only the model is paid for, a few cents.`
+    : `Real compute on Ouro. Up to ${steps} steps; an exploration step runs GGen for tens of minutes.`
+      + (usesExpensive ? ` Up to ${expensive} multi-hour DFT calculation${expensive === 1 ? '' : 's'}.` : '')
+      + ` Model: ${info.model}.`;
+  $('r-expensive-row').hidden = !usesExpensive;
+  $('start').disabled = !info.can_run;
+  if (!info.can_run) $('start-error').textContent = 'The watcher was started without the API keys a run needs.';
+}
+$('r-steps').oninput = $('r-expensive').oninput = renderRunSummary;
+
+$('start').onclick = async () => {
+  $('start-error').textContent = '';
+  const objective = {...draft, title: $('o-title').value.trim() || draft.title,
+    required_elements: symbols($('o-required').value), forbidden_elements: symbols($('o-forbidden').value),
+    notes: $('o-notes').value};
+  $('start').disabled = true;
+  try {
+    const res = await api('/api/campaigns', {goal: draftGoal, objective,
+      steps: Number($('r-steps').value), expensive: Number($('r-expensive').value)});
+    $('goal-text').value = '';
+    await loadCampaigns(res.campaign_id);
+    showComposer(false);
+  } catch (e) { $('start-error').textContent = e.message; }
+  finally { $('start').disabled = false; }
+};
+$('more-run').onclick = async () => {
+  try { await api('/api/runs', {campaign_id: campaignId, steps: Number($('more-steps').value)}); }
+  catch (e) { alert(e.message); }
+  refresh();
+};
+
+// ---- data ------------------------------------------------------------------
+async function refresh() {
+  if (campaignId == null) return;
+  state = await api(`/api/state?campaign=${campaignId}`);
+  render();
+}
+async function poll() {
+  try {
+    if (campaignId != null) {
+      const fresh = await api(`/api/events?campaign=${campaignId}` + (lastEvent == null ? '' : `&after=${lastEvent}`));
+      if (lastEvent == null && !fresh.length) lastEvent = 0;
+      if (fresh.length) {
+        events = events.concat(fresh).slice(-600);
+        lastEvent = fresh[fresh.length - 1].id;
+        await refresh();
+      } else if (state) { const st = liveStatus(); $('status-text').textContent = st.text; }
+    }
+  } catch (e) { $('status-text').textContent = 'cannot reach the watcher: ' + e.message; }
+  setTimeout(poll, 1000);
+}
+async function loadCampaigns(select) {
+  const campaigns = await api('/api/campaigns');
+  $('campaign').hidden = !campaigns.length;
+  $('campaign').replaceChildren(...campaigns.map(c => el('option', {value: c.id}, `${c.title} (${c.steps_done} steps)`)));
+  if (!campaigns.length) return false;
+  const wanted = select ?? campaignId ?? Number(new URLSearchParams(location.search).get('campaign'));
+  const next = campaigns.some(c => c.id === wanted) ? wanted : campaigns[campaigns.length - 1].id;
+  if (next !== campaignId) { campaignId = next; events = []; lastEvent = null; state = null; selectedNode = null; }
+  $('campaign').value = campaignId;
+  await refresh();
+  return true;
+}
+async function init() {
+  info = await api('/api/info');
+  $('world').textContent = info.sim ? `simulated world · seed ${info.seed}` : 'real compute';
+  $('more-steps').value = info.defaults.steps;
+  $('draft-note').textContent = info.can_compile ? `Drafted by ${info.model}; nothing runs yet.`
+    : 'The watcher has no OPENROUTER_API_KEY, so it cannot draft an objective.';
+  $('draft').disabled = !info.can_compile;
+  $('campaign').onchange = () => loadCampaigns(Number($('campaign').value));
+  if (!await loadCampaigns()) {
+    $('status-text').textContent = 'no campaigns yet';
+    showComposer(true);
+  }
+  poll();
+}
+init();
+</script>
+</body>
+</html>

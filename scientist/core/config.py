@@ -74,6 +74,9 @@ class ScientistConfig:
     max_expensive_evals_per_step: int = 2
     max_cheap_evals_per_step: int = 6
     proposals_per_step: int = 4
+    # A researcher's pause holds a step at its proposals for at most this long.
+    pause_timeout_seconds: int = 60 * 30
+    pause_poll_seconds: float = 1.0
 
     # Annealing. Scores live in [0, 1], so temperatures are on that scale.
     # The temperature falls from t_initial to t_min over the run's steps.

@@ -376,6 +376,8 @@ def test_evaluate_move_updates_owner_node():
     assert store.candidate(1)["properties"]["magnetic_anisotropy_energy"] == 1.2
     assert nodes[1]["kind"] == "evaluate" and nodes[1]["score"] > before
     assert store.node(nodes[0]["id"])["score"] == nodes[1]["score"]
+    # The exploring step keeps the score it reached on its own.
+    assert store.node(nodes[0]["id"])["first_score"] == pytest.approx(before)
 
 
 def test_selection_follows_temperature():
