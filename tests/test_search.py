@@ -437,9 +437,18 @@ def test_report_sanitize_and_inventory():
         f'```assetComponent\n{{"id": "{bad}", "assetType": "file"}}\n```\n'
         f"see [structure](file:{good}) and [ghost](file:{bad})"
     )
-    cleaned = sanitize(body, {good})
+    cleaned = sanitize(body, {good: "file"})
     assert good in cleaned and bad not in cleaned
     assert "ghost" in cleaned and "[ghost]" not in cleaned
+
+    # A post embedded or linked as a file gets its real type back.
+    fixed = sanitize(
+        f'```assetComponent\n{{"id": "{good}", "assetType": "file", "viewMode": "preview"}}\n```\n'
+        f"[report](file:{good})",
+        {good: "post"},
+    )
+    assert '"assetType": "post"' in fixed and '"viewMode": "preview"' in fixed
+    assert f"[report](post:{good})" in fixed
 
     title, description, text = parse_reply("TITLE: A\nDESCRIPTION: B\n---\nbody")
     assert (title, description, text) == ("A", "B", "body")

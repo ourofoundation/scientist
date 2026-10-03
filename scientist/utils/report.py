@@ -61,8 +61,9 @@ DESCRIPTION: <one or two sentences>
 _UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 _EMBED = re.compile(r"```assetComponent\s*\n(.*?)\n```", re.DOTALL)
 _LINK = re.compile(
-    rf"\[([^\]]*)\]\((?:file|dataset|post|route|service|asset|action):({_UUID})\)"
+    rf"\[([^\]]*)\]\((file|dataset|post|route|service|asset|action):({_UUID})\)"
 )
+_ASSET_TYPES = {"file", "dataset", "post", "route", "service", "quest"}
 
 
 def build_inventory(
@@ -147,9 +148,11 @@ def build_inventory(
     return items
 
 
-def sanitize(markdown: str, allowed_ids: set) -> str:
-    """Drop embeds and links whose ids are not in the inventory."""
-    allowed = {str(i).lower() for i in allowed_ids}
+def sanitize(markdown: str, types: Dict[str, str]) -> str:
+    """Drop embeds and links whose ids are not in the inventory, and correct
+    their asset types from it. The writer model sometimes copies the prompt's
+    `"assetType": "file"` example onto a post, which the frontend can't load."""
+    known = {str(i).lower(): t for i, t in types.items()}
 
     def embed(match: re.Match) -> str:
         try:
@@ -159,16 +162,27 @@ def sanitize(markdown: str, allowed_ids: set) -> str:
         ids = [block.get("id")]
         display = block.get("displayConfig") or {}
         ids += [display.get(k) for k in ("visualizationId", "actionId") if display.get(k)]
-        if all(i and str(i).lower() in allowed for i in ids):
+        if not all(i and str(i).lower() in known for i in ids):
+            logger.warning(f"Removing embed with unknown id: {block.get('id')}")
+            return ""
+        actual = known[str(block["id"]).lower()]
+        if actual not in _ASSET_TYPES:
+            logger.warning(f"Removing embed of a non-asset {actual}: {block['id']}")
+            return ""
+        if block.get("assetType") == actual:
             return match.group(0)
-        logger.warning(f"Removing embed with unknown id: {block.get('id')}")
-        return ""
+        block["assetType"] = actual
+        return f"```assetComponent\n{json.dumps(block)}\n```"
 
     def link(match: re.Match) -> str:
-        if match.group(2).lower() in allowed:
-            return match.group(0)
-        logger.warning(f"Unlinking unknown id: {match.group(2)}")
-        return match.group(1)
+        label, prefix, uuid = match.groups()
+        actual = known.get(uuid.lower())
+        if actual is None:
+            logger.warning(f"Unlinking unknown id: {uuid}")
+            return label
+        if actual in _ASSET_TYPES or actual == "action":
+            prefix = actual
+        return f"[{label}]({prefix}:{uuid})"
 
     return _LINK.sub(link, _EMBED.sub(embed, markdown))
 
@@ -259,7 +273,7 @@ class Reporter:
                 purpose="report",
             )
             title, description, body = parse_reply(reply)
-            body = sanitize(body, {item["id"] for item in inventory})
+            body = sanitize(body, {item["id"]: item["type"] for item in inventory})
         except Exception as e:
             logger.exception(f"Report writing failed, publishing the plain record: {e}")
         if not body:
