@@ -35,6 +35,9 @@ selects one by temperature, and every step is remembered across runs. See `READM
 - **The report may only cite real assets.** `utils/report.py` builds an
   inventory of ids and strips any embed or link not in it.
 
+- **No test suite.** The code changes too fast for tests to pay for themselves.
+  Do not add tests; check loop changes with `--sim --oracle` instead.
+
 ## Core Components
 
 - `scientist/core/search.py` — the loop and the LLM decision schemas/prompts
@@ -54,7 +57,6 @@ pip install -e .
 scientist "<goal>" --steps 2
 scientist --sim --steps 10 --oracle   # simulated world: ~1 min, a few cents
 scientist --watch --sim               # live view of the simulated memory
-pytest tests
 ```
 
 `--sim` swaps GGen and the property routes for `computational/sim.py` (a

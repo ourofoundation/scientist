@@ -136,7 +136,6 @@ scientist/
   watch.py, watch.html  # local live view and researcher direction
   main.py          # CLI
 modal_app.py       # daily scheduled run; memory on a Modal Volume
-tests/             # search loop against fake backends
 ```
 
 ## Running
@@ -152,8 +151,6 @@ scientist --list                   # campaigns in memory
 # Simulated world: instant calculations, cheap model, separate memory,
 # nothing sent to Ouro. --oracle prints the best score the world contains.
 scientist --sim --steps 12 --oracle [--seed N] [--model <openrouter id>]
-
-pytest tests
 ```
 
 ## Environment
