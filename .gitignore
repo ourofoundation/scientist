@@ -217,3 +217,5 @@ __marimo__/
 
 # VSCode/Cursor
 settings.json
+# Lab notebook: private research record, its own git repo
+lab/notebook/
