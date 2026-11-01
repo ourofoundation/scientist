@@ -4,12 +4,21 @@ Guidance for working in this repository.
 
 ## Project Overview
 
-An AI scientist for materials research on Ouro. A plain-language goal is
-compiled into a measurable objective, and an annealing search pursues it: the
-harness judges where the goal stands, the LLM proposes moves, the harness
-selects one by temperature, and every step is remembered across runs. See `README.md` for the full loop.
+An AI scientist for materials research on Ouro, in two forms: a Claude Code
+skill where Claude does the research itself (`lab/`), and a Python package
+that runs a harness-driven annealing search (`scientist/`, see `README.md`).
 
-## Design rules
+## Two scientists in this repo
+
+- **`lab/`**: Claude Code itself is the scientist. When asked to do research
+  (a materials goal, "continue the campaign"), follow the `scientist` skill in
+  `lab/skill/SKILL.md` and record everything in the private notebook
+  `lab/notebook/`. The design rules below don't apply to that work: there
+  you are the free-running agent, and the skill sets the method.
+- **`scientist/`** (the Python package): the harness-driven annealing
+  search. The design rules below apply when you change its code.
+
+## Design rules (Python package)
 
 - **The harness owns control flow.** Budget, temperature, move selection and
   the verdict on the goal (`Search.judge`: met / not yet / blocked, computed

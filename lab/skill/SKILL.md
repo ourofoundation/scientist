@@ -30,7 +30,9 @@ goal is judged met or blocked, or only long runs are left in flight.
 
 ### 0. Orient (every session)
 
-1. Read `notebook/index.md` and `notebook/learnings.md`.
+Work from the scientist repo root, so `lab/...` paths resolve.
+
+1. Read `lab/notebook/index.md` and `lab/notebook/learnings.md`.
 2. For the campaign at hand, read `campaign.md`, `hypotheses.md`,
    `candidates.md` and the newest entries of `log.md`. Start from its
    `Next` and `In flight`.
@@ -105,21 +107,28 @@ Kinds of moves:
 - **Calibrate**: run the same route on a known material with a measured
   value, to see how far the route is off before you trust it on new ones.
 
-Spend in tiers ([routes.md](routes.md)): free and cheap routes on everything
-plausible, expensive routes only on a candidate whose best case, with every
-unmeasured criterion at its target, would beat the best fully measured one.
+Spend in tiers ([routes.md](routes.md)): free and short routes on everything
+plausible. Expensive routes, meaning the DFT ones, only on a candidate whose
+best case, with every unmeasured criterion at its target, would beat the
+best fully measured one.
 Calibrate a route on a known material before relying on it in a new
 chemistry.
 
 For every experiment:
-1. Append the `running` line to `experiments.jsonl` with the prediction
+1. Append a `planned` line to `experiments.jsonl` with the prediction
    **before** calling the route.
-2. Check the route's input schema with `get_asset(id=<route>, detail="full")`
-   the first time you use it in a session. Pass structures as
-   `input_assets`, never as hand-built file objects.
+2. Check the route's input schema with `get_asset(id=<route id>, detail="full")`
+   (ids are in [routes.md](routes.md)) the first time you use it in a
+   session. Pass structures as `input_assets`, never as hand-built file
+   objects. Note the source license of any database structure (routes.md).
 3. `execute_route(...)` with `notify="failure"`, plus the campaign's
    `org_id` and `team_id`. Use `wait=false` for anything that takes minutes
-   or more, and record the `action_id` straight away.
+   or more. Straight after the call, append the `running` line with the
+   `action_id`.
+4. To wait on a run, use `get_action(id=..., wait=true)`. The
+   `ouro action wait` command that route results suggest needs
+   `OURO_API_KEY` in the shell, which this setup doesn't have. An MCP call
+   that times out doesn't mean the run failed: check `list_my_actions`.
 
 Run independent experiments in parallel. Don't sit waiting on an hours-long
 run: carry on with other work, and if that runs out, end the session with
@@ -199,5 +208,10 @@ campaign. Posts are private by default; ask before making one public.
 - Never discard a relaxed structure because it missed a requested symmetry
   or system. Filters narrow what you report, not what you keep.
 - Stay inside the budget in `campaign.md`. Record each run's `cost` in the
-  ledger, and check `python lab/skill/scripts/notebook.py spend <campaign>`
-  before every expensive run.
+  ledger. Org-paid runs report none, so estimate it from run time × the
+  rate in routes.md and mark it `cost_estimated`. Check
+  `python lab/skill/scripts/notebook.py spend <campaign>` before every
+  expensive run.
+- Non-commercial structures (GNoME, MP BY-NC) may be measured by any route,
+  but what you derive from them keeps the license and is never priced. See
+  routes.md.

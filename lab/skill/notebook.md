@@ -19,6 +19,7 @@ notebook/
       candidates.md           every structure considered, with novelty and scores
       experiments.jsonl       one line per experiment, appended, never rewritten
       log.md                  one dated entry per session
+      work/<experiment id>/   scripts, local CIFs and raw outputs behind one experiment
 ```
 
 Ouro holds the evidence: structures, route runs, outputs, posts. The notebook
@@ -93,10 +94,21 @@ campaign; that is where new results come from.
 ## candidates.md
 
 ```markdown
-| ID | Formula | Asset | Origin | Novelty | e_hull | Js (T) | K1 (MJ/m³) | Score | Status |
-|---|---|---|---|---|---|---|---|---|---|
-| C12 | Fe6SiP2 | file:01a1… | built: Fe2P, Si on P2 | computed-only | 0.012 | 1.19 | 1.83 | 0.81 | lead |
+| ID | Formula | Asset | Origin | Novelty | License | e_hull (eV/atom, surface) | Phonons | Js (T) | K1 (MJ/m³, geometry) | Cost ($/kg) | Score | Status |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| C12 | Fe6SiP2 | file:01a1… | built: Fe2P, Si on P2 | computed-only | ours | 0.012 (Orb) | stable | 1.19 | 1.50 (DFT-relaxed) | 2.1 | 0.81 | lead |
 ```
+
+- Give a column to every hard criterion in the objective, plus the measured
+  properties that are scored. Adapt the columns to the campaign.
+- Say how each value was measured where it matters: the hull surface (Orb
+  or PBE), and the geometry behind K1 (unrelaxed, ML-relaxed, DFT-relaxed).
+  Never mix bases in one column without saying so.
+- Every row has an asset id. A candidate with no structure on Ouro can't be
+  measured or cited.
+- License: `ours`, or the source license (`CC-BY-4.0`, `CC-BY-NC-4.0`, …).
+  Non-commercial rows can be measured by any route; their derived assets keep
+  the license and are never priced.
 
 - Origin: `literature`, `database` (MP/Alexandria/COD id), `ggen` (explore
   action id), `built` (parent + operation), or `generated` (model route).
@@ -110,29 +122,39 @@ campaign; that is where new results come from.
 
 ## experiments.jsonl
 
-One JSON object per line. Append the line when the experiment starts, with
-`status: "running"` and the action id, then append a second line with the
-same `id` when it finishes. The last line for an id wins. Never rewrite
-earlier lines.
+One JSON object per line, appended in three steps that share one `id`:
+1. `planned`, with the prediction, **before** the route call.
+2. `running`, with the `action_id`, straight after the call returns.
+3. `done` or `failed`, with the result, when it finishes.
+
+Later lines for an id update earlier ones. Never rewrite earlier lines.
+Experiments with no route call (literature, novelty, local builds) can go
+straight from `planned` to `done`.
 
 ```json
-{"id":"E052","date":"2026-10-31","campaign":"re-free-magnet","hypothesis":"H7","candidate":"C12","kind":"measure","route":"mmoderwell/magnetic-anisotropy-energy","input_assets":{"structure":"01a1..."},"params":{"kspacing":0.16},"action_id":"01a2...","status":"running","prediction":{"property":"K1","low":1.2,"high":2.0,"unit":"MJ/m3","note":"easy axis c"},"prior":"literature-backed"}
-{"id":"E052","date":"2026-10-31","status":"done","result":{"property":"K1","value":1.83,"unit":"MJ/m3","note":"easy axis c"},"output_assets":["01a2..."],"cost_usd":4.12,"verdict":"supports","surprise":0.2}
+{"id":"E052","date":"2026-10-31","campaign":"re-free-magnet","hypothesis":"H7","candidate":"C12","kind":"measure","route":"mmoderwell/magnetic-anisotropy-energy","input_assets":{"structure":"01a1..."},"params":{"kspacing":0.16},"status":"planned","prediction":{"property":"K1","low":1.2,"high":2.0,"unit":"MJ/m3","note":"easy axis c"},"prior":"literature-backed"}
+{"id":"E052","status":"running","action_id":"01a2..."}
+{"id":"E052","date":"2026-10-31","status":"done","result":{"property":"K1","value":1.83,"unit":"MJ/m3","note":"easy axis c"},"output_assets":["01a2..."],"cost_usd":4.12,"cost_estimated":true,"verdict":"supports","surprise":0.2}
 ```
+
+A one-sided prediction leaves the other bound `null`, e.g.
+`{"property":"Js","low":1.0,"high":null}`.
 
 - `kind`: `literature`, `novelty`, `explore` (GGen or other generator),
   `build` (substitution, defect, strain, supercell), `relax`, `measure`.
-- `status`: `running`, `done`, `failed`. Failed means the value is unknown;
-  record the error and never count it as a negative result.
+- `status`: `planned`, `running`, `done`, `failed`. Failed means the value is
+  unknown; record the error and never count it as a negative result.
+- `cost_usd`: from the action's `cost` block. Org-paid runs report none, so
+  estimate it (seconds × rate in routes.md) and set `cost_estimated: true`.
 - `verdict` against the hypothesis's prediction: `supports`, `refutes`,
   `inconclusive`, `n/a`.
 - `surprise`: 0 = as predicted, 1 = nothing like it.
 - `prior` is copied from the hypothesis, so calibration can compare
   literature-backed and no-precedent predictions.
 
-`scripts/notebook.py calibration <campaign>` reads this file and reports how
-often predictions held. `scripts/notebook.py open` lists experiments still
-running across all campaigns.
+`lab/skill/scripts/notebook.py calibration <campaign>` reads this file and
+reports how often predictions held. `lab/skill/scripts/notebook.py open`
+lists experiments still planned or running across all campaigns.
 
 ## log.md
 

@@ -147,14 +147,14 @@ def open_runs() -> None:
         if not (folder / "experiments.jsonl").exists():
             continue
         for eid, e in experiments(folder.name).items():
-            if e.get("status") == "running":
+            if e.get("status") in ("planned", "running"):
                 found = True
                 print(
-                    f"{folder.name}  {eid}  {e.get('route', e.get('kind'))}  "
+                    f"{folder.name}  {eid}  {e['status']}  {e.get('route', e.get('kind'))}  "
                     f"action={e.get('action_id')}  since {e.get('date')}"
                 )
     if not found:
-        print("Nothing running.")
+        print("Nothing planned or running.")
 
 
 def calibration(slug: str) -> None:
@@ -172,8 +172,11 @@ def calibration(slug: str) -> None:
             surprise[prior].append(float(e["surprise"]))
         p, r = e.get("prediction") or {}, e.get("result") or {}
         value = r.get("value")
-        if isinstance(value, (int, float)) and "low" in p and "high" in p:
-            by_prior[prior].append(p["low"] <= value <= p["high"])
+        low, high = p.get("low"), p.get("high")
+        if isinstance(value, (int, float)) and (low is not None or high is not None):
+            # A missing bound is open: {"low": 1.0, "high": null} means "at least 1.0".
+            inside = (low is None or value >= low) and (high is None or value <= high)
+            by_prior[prior].append(inside)
 
     print(f"{slug}: {len(rows)} experiments, {failed} failed (unknown, not negative)")
     for prior in sorted(set(by_prior) | set(surprise)):
@@ -187,8 +190,15 @@ def calibration(slug: str) -> None:
 def spend(slug: str) -> None:
     rows = experiments(slug)
     dollars = sum(float(e.get("cost_usd") or 0) for e in rows.values())
+    estimated = sum(
+        float(e.get("cost_usd") or 0) for e in rows.values() if e.get("cost_estimated")
+    )
     heavy = [eid for eid, e in rows.items() if e.get("route") in EXPENSIVE]
-    print(f"{slug}: ${dollars:.2f} spent, {len(heavy)} expensive runs ({', '.join(heavy) or 'none'})")
+    note = f" (${estimated:.2f} of it estimated)" if estimated else ""
+    print(
+        f"{slug}: ${dollars:.2f} spent{note}, {len(heavy)} expensive runs "
+        f"({', '.join(heavy) or 'none'})"
+    )
 
 
 def main(argv: list[str]) -> None:

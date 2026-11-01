@@ -45,19 +45,27 @@ point of the brief.
 Before calling a candidate a discovery (and before spending expensive
 runs on it), classify it in `candidates.md`:
 
-1. **Databases.** Look up the composition and structure type:
-   `mmoderwell/search-materials-project-materials`,
-   `mmoderwell/resolve-a-material-query`,
-   `mmoderwell/generate-a-ggen-system-report` (GGen DB: MP, Alexandria,
-   GNoME, COD and our generated structures), and
-   `mmoderwell/get-the-cif-of-a-materials-project-alexandria-gnome-or-cod-material`
-   to pull a matching record for comparison.
-   A match on composition and prototype means at least `computed-only`.
+1. **Databases.** Run the novelty route on the candidate's CIF:
+   `mmoderwell/check-whether-a-crystal-structure-is-already-known`
+   (id in routes.md, free). It matches the structure against MP,
+   Alexandria, GNoME and COD and returns `known`, `new polymorph` or
+   `new composition`, plus `experimentally_known` and any copies already on
+   Ouro. A structural match means at least `computed-only`, and
+   `experimentally_known: true` means `known`. For the neighboring phases,
+   use the hull route with `include_phase_diagram: true`, or
+   `mmoderwell/search-materials-project-materials`. Avoid the GGen system
+   report for this: it always publishes a post.
 2. **Literature.** Search the formula, the parent plus the substitution
    ("Fe2P Si substitution"), and the structure type in this chemical system.
    A report of synthesis means `known`.
 3. **Neither** means `new`. Record what you searched, so "new" means
    "not found in X, Y, Z", not "not checked".
+
+An ordered cell of a phase known as a solid solution (one Si ordering of
+Fe2(P,Si), say) is `known`, even when the database calls the exact
+composition new: the material has been made, and the ordering is a model of
+it. Say which ordering in the notes. It becomes `new` only if the ordering
+itself is the claim and nothing reports it.
 
 Record it as a `kind: "novelty"` experiment.
 
