@@ -178,22 +178,35 @@ Status:
 1. Write the `log.md` entry: what you read, did, learned and decided, plus
    `Next` and `In flight`, exactly.
 2. Update `campaign.md` Status and Best so far, and `index.md`.
-3. Commit the notebook (see [notebook.md](notebook.md)).
-4. Tell the user in a few lines: what was found, what changed in your
-   belief, what's running, and what's next.
+3. Write the loop's post on Ouro (see "Reporting on Ouro") and put its id
+   in the `log.md` entry.
+4. Commit the notebook (see [notebook.md](notebook.md)).
+5. Tell the user in a few lines: what was found, what changed in your
+   belief, what's running, and what's next, with a link to the post.
 
 ## Reporting on Ouro
 
-Write a post when there is something worth reading: a lead that survives
-expensive measurement, a hypothesis firmly refuted, or the end of a
-campaign. Posts are private by default; ask before making one public.
+Every loop ends with one post, even when nothing worked: a refuted
+hypothesis or a soft candidate is a result, and the team follows the
+campaign through these posts. Publish it where the campaign's runs go
+(`campaign.md` Budget: org, team, visibility). Never make one public, or
+wider than the campaign's visibility, without asking.
 
-- Cite only ids that appear in the notebook or in action results. Embed
-  structures and route runs (`displayConfig.actionId`) rather than retyping
-  numbers.
+- Title: `<campaign title>, loop <n>: <the finding in a few words>`.
+  Number loops by session in `log.md`.
+- Open with two or three sentences: what the loop tested and what it found.
+- Then, in order: the measured results (a short table, one row per
+  candidate, with the geometry and route behind each value); what each
+  hypothesis did (prediction vs result); what changed in our belief; what
+  went wrong with the instruments, if anything; what's next.
+- Embed the structures and the route runs behind each headline number
+  (`displayConfig.actionId`) rather than only retyping them. Link earlier
+  loop posts and the campaign's datasets by id.
+- Cite only ids that appear in the notebook or in action results.
 - Separate what was measured, what the literature reports, and what is
   conjecture.
-- State the novelty of every candidate you present.
+- State the novelty and license of every candidate you present.
+- Keep it short: the notebook holds the detail.
 
 ## Rules
 
