@@ -22,6 +22,7 @@ Reference files, read when the step needs them:
 - [notebook.md](notebook.md): notebook layout and record formats
 - [routes.md](routes.md): which route measures what, its cost tier, its traps
 - [research.md](research.md): literature search, novelty check, staying novel
+- [reporting.md](reporting.md): how to write the loop post on Ouro
 
 ## The loop
 
@@ -199,9 +200,12 @@ wider than the campaign's visibility, without asking.
   candidate, with the geometry and route behind each value); what each
   hypothesis did (prediction vs result); what changed in our belief; what
   went wrong with the instruments, if anything; what's next.
-- Embed the structures and the route runs behind each headline number
-  (`displayConfig.actionId`) rather than only retyping them. Link earlier
-  loop posts and the campaign's datasets by id.
+- Preview the one to three structures the loop is about as CIFs
+  (`viewMode: "preview"`, the crystal viewer). Link everything else inline:
+  each measured number to its run (`[1.42](action:<id>)`), other structures,
+  earlier loop posts and datasets by id. Never embed a route run as a block.
+  See [reporting.md](reporting.md) for the table, the shape and a pre-post
+  check.
 - Cite only ids that appear in the notebook or in action results.
 - Separate what was measured, what the literature reports, and what is
   conjecture.
