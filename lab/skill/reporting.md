@@ -67,7 +67,8 @@ a number straight to its evidence:
    verdict, then prediction against result.
 4. **What changed**: our belief, in a few bullets.
 5. **Instruments**: only if something went wrong.
-6. **Next**.
+6. **Next**: the ranked proposal from the log, a line each. It is a
+   proposal, so readers can argue with it before the next loop decides.
 7. One line linking earlier loops.
 
 Use `##` headings, no deeper. Keep units in column headers, not in cells.

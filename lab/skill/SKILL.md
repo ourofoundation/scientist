@@ -35,12 +35,20 @@ Work from the scientist repo root, so `lab/...` paths resolve.
 
 1. Read `lab/notebook/index.md` and `lab/notebook/learnings.md`.
 2. For the campaign at hand, read `campaign.md`, `hypotheses.md`,
-   `candidates.md` and the newest entries of `log.md`. Start from its
-   `Next` and `In flight`.
+   `candidates.md` and the newest entries of `log.md`. Its `In flight` is
+   what to collect, and its `Next` is the last session's proposal.
 3. Collect results for anything still running:
    `python lab/skill/scripts/notebook.py open` lists running experiments,
    then `get_action(id=...)` for each. Record finished ones (step 5) before
-   doing anything new.
+   doing anything new. Read any new comments on the last loop post
+   (`list_comments`).
+4. Decide what this session does. The session that wrote `Next` knew the
+   detail but was anchored on its own thread, and it ranked the options
+   before these results and comments existed. Check each option against
+   what has landed since, anything the user has said, and the whole
+   campaign (step 6's "are we stuck?"). Then take the top option or
+   override it. Open this session's `log.md` entry with a `Chose:` line
+   saying which, and why if it isn't option 1.
 
 If the notebook does not exist yet, run
 `python lab/skill/scripts/notebook.py init`.
@@ -177,13 +185,20 @@ Status:
 ### 8. Close the session
 
 1. Write the `log.md` entry: what you read, did, learned and decided, plus
-   `Next` and `In flight`, exactly.
+   `Next` and `In flight`, exactly. `Next` is a proposal for the next
+   session to judge, not a decision: two or three options, ranked, each
+   with the reason for it and the result that would change its rank.
+   Include one that leaves the current thread whenever there is one worth
+   naming. Add anything the next session needs that the other files don't
+   hold, such as a hunch or why a run failed. A bare to-do gets followed
+   blindly, so give the reasons.
 2. Update `campaign.md` Status and Best so far, and `index.md`.
 3. Write the loop's post on Ouro (see "Reporting on Ouro") and put its id
    in the `log.md` entry.
 4. Commit the notebook (see [notebook.md](notebook.md)).
 5. Tell the user in a few lines: what was found, what changed in your
-   belief, what's running, and what's next, with a link to the post.
+   belief, what's running, and what you propose next, with a link to the
+   post.
 
 ## Reporting on Ouro
 
@@ -199,7 +214,7 @@ wider than the campaign's visibility, without asking.
 - Then, in order: the measured results (a short table, one row per
   candidate, with the geometry and route behind each value); what each
   hypothesis did (prediction vs result); what changed in our belief; what
-  went wrong with the instruments, if anything; what's next.
+  went wrong with the instruments, if anything; what's proposed next.
 - Preview the one to three structures the loop is about as CIFs
   (`viewMode: "preview"`, the crystal viewer). Link everything else inline:
   each measured number to its run (`[1.42](action:<id>)`), other structures,

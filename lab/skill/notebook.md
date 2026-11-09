@@ -163,15 +163,23 @@ Newest entry at the top. One entry per session, written during the session.
 ```markdown
 ## 2026-10-31
 
+Chose: option 2 of the last `Next` (Si on P), not option 1 (more Co cells): E049 came back flat overnight, so the Co thread has nothing left to rank.
 Read: H7 still open; E049 MAE finished overnight.
 Did: novelty check on Fe-Si-P (E050); built Fe6SiP2 from Fe2P (E051); MAE (E052).
 Learned: Fe6SiP2 keeps easy axis c (E052). L014 added.
-Decided: next, test whether the gain survives a converged k-mesh before any more substitutions.
-Next: E052 converged rerun at kspacing 0.12; open H8 (Ge on P, no-precedent).
+Decided: no more substitutions until the gain survives a converged k-mesh.
+Next:
+1. Rerun E052 at kspacing 0.12. The gain is one coarse-mesh number, and L014 says that mesh ranks cells almost at random. Drops if E053 shows the moment collapsed, because then K doesn't matter.
+2. Open H8 (Ge on P, no-precedent). Nothing published, same site. Moves to first if the rerun holds, because then the site is the lever.
+3. Leave Fe2P for an Fe-Co-B explore (H17). Moves up if the rerun kills the gain.
+Hunch, not in the files: the E052 cell relaxed oddly along c; check the c/a before trusting K.
 In flight: E053 (action 01a2..., magnetic moments, started 14:05).
 ```
 
-`Next` and `In flight` are what the next session starts from. Keep them exact.
+`Chose` is the first line written in a session: which option of the last
+`Next` it took, and why if not the first. `Next` is a ranked proposal for
+the next session, each option with its reason and what would change its
+rank. `In flight` must be exact.
 
 ## learnings.md
 
