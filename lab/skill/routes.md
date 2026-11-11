@@ -143,7 +143,7 @@ can't see). Calibrate against a measured compound in the same family.
 | Magnetic order | `mmoderwell/magnetic-ordering-fm-vs-afm` | `67393536-da30-4983-9c21-37c9fabbb296` | **DFT** $0.0012/s | one SCF per ordering |
 | Exchange Jij | `mmoderwell/exchange-couplings-jij` | `def3b73b-b790-4716-bb37-60b565342d48` | **DFT** $0.0003/s | |
 | Curie T (DFT) | `mmoderwell/curie-temperature-tc` | `29fd80eb-7cf5-4895-a349-4e9864407567` | **DFT** $0.0003/s | Heisenberg Monte Carlo on DFT Jij |
-| Anisotropy (MAE) | `mmoderwell/magnetic-anisotropy-energy` | `331d9faf-4b44-4679-a958-5a9a816036e1` | **DFT** $0.0006/s | rejects DFT-unrelaxed input by default, so DFT-relax first; k-mesh convergence matters |
+| Anisotropy (MAE) | `mmoderwell/magnetic-anisotropy-energy` | `331d9faf-4b44-4679-a958-5a9a816036e1` | **DFT** $0.0006/s | rejects DFT-unrelaxed input by default, so DFT-relax first; k-mesh convergence matters. The response's `smearing_check` repeats the spin-orbit sum at half the smearing: when `sensitive` is true (the easy axis changes, or the value moves by more than 0.05 MJ/m³ and 10%) the headline is not a measurement; rerun at the widths its note names (the DFT is reused) and extrapolate |
 | DOS | `mmoderwell/density-of-states` | `3fa25076-f993-4a57-90dd-799f4d2b6e1b` | **DFT** $0.0003/s | PDOS, bands, band gap routes exist too (search) |
 | Charge density | `mmoderwell/charge-density` | `2941faa7-deb2-48dd-9bc1-7efb7f28ebaf` | **DFT** $0.0003/s | |
 | Γ orbitals | `mmoderwell/orbitals-at-gamma` | `d1e8f4a1-9adb-4c41-93dd-0f387211ae53` | **DFT** $0.0003/s | |
