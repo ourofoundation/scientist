@@ -51,10 +51,16 @@ runs on it), classify it in `candidates.md`:
    Alexandria, GNoME and COD and returns `known`, `new polymorph` or
    `new composition`, plus `experimentally_known` and any copies already on
    Ouro. A structural match means at least `computed-only`, and
-   `experimentally_known: true` means `known`. For the neighboring phases,
-   use the hull route with `include_phase_diagram: true`, or
-   `mmoderwell/search-materials-project-materials`. Avoid the GGen system
-   report for this: it always publishes a post.
+   `experimentally_known: true` means `known`. For many cells at once,
+   `crystal.py novelty` and `crystal.py classify` give the same answer from
+   a local copy of the database; run the route on the finalists so the
+   claim has an action id. For the neighboring phases use
+   `crystal.py hull <system>`. Avoid the GGen system report for this: it
+   always publishes a post.
+   A cell that is `new composition` can still be a known structure type
+   with one site shared or swapped (`crystal.py classify` says which), and
+   database-new is not literature-new: ZrFe10Si2, a made compound, came
+   back new.
 2. **Literature.** Search the formula, the parent plus the substitution
    ("Fe2P Si substitution"), and the structure type in this chemical system.
    A report of synthesis means `known`.

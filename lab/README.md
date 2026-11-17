@@ -14,7 +14,10 @@ lab/
     notebook.md       how experiments, hypotheses and learnings are recorded
     routes.md         the instruments: which route measures what, tiers, habits
     research.md       literature, novelty checks, staying novel, backtesting
-    scripts/notebook.py   init / new campaign / open runs / calibration / spend
+    scripts/notebook.py   read the notebook in tiers (brief / learnings / recall); ids, spend, calibration, checks
+    scripts/crystal.py    Ouro's crystal database: hulls, competitors, novelty, false-positive checks, prototypes
+    scripts/screen.py     a batch of cells through the hull route, nothing becomes an asset
+    scripts/pbe_check.py  a PBE stability check: plan, submit, collect, balance
   notebook/           private, gitignored here; its own local git repo
 ```
 
@@ -25,7 +28,12 @@ lab/
 - Cheap measurements first. Expensive runs only when a candidate could still
   beat the best fully measured one.
 - The goal is judged from measurements only. A failed calculation is
-  unknown, never bad.
+  unknown, never bad. "Met" is the top rung of a claim ladder (instrument,
+  stability, settings, arrangement, makeability, novelty), and
+  `notebook.py check` reports anything called met that the ladder does
+  not carry.
+- Routes are instruments with a calibration record: `instruments.md` says
+  what each has been shown to do in each structure family.
 - Memory is private. Reports cite only real asset ids.
 
 ## What changes

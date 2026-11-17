@@ -14,7 +14,12 @@ using the **id** column below:
 Send only the parameters you mean to change: defaults are tuned, and filling
 in every field has broken runs before. To find a route not listed here,
 `search_assets(asset_type="route", query=...)`. Ids and prices were checked
-on 2026-10-31.
+on 2026-10-31; the Crystal DB routes (hull, novelty, materialize) on
+2026-11-13.
+
+One cell at a time goes through the MCP tools. A batch (tens to thousands
+of cells), anything that reads the crystal database, and a PBE stability
+check go through the lab scripts: see "Crystal DB and the lab scripts".
 
 ## Time and money
 
@@ -25,7 +30,9 @@ Two separate things:
 - **Price.** `free` costs nothing. `$/s` is billed per second of compute
   at the rate shown. `paid` is pay-per-use at a price `get_asset` shows.
   A "cheap routes only" budget means no DFT routes, but free and paid
-  short routes are fine within the dollar cap.
+  short routes are fine within the dollar cap. "Free routes only" means
+  routes priced `free` and nothing else: phonons, the NequIP relaxation
+  and every DFT route are out, even at a few cents.
 
 Runs paid by an organization don't report a cost back to the caller
 (`get_action` and `list_usage` show nothing). Record
@@ -40,6 +47,46 @@ derive from them, so record it in `candidates.md`, keep it in the files you
 upload, and never put a price on a derived asset. Check `license` on anything
 pulled with the materialize route, and on the matches the novelty route
 returns.
+
+## Crystal DB and the lab scripts
+
+Ouro keeps one crystal database
+([crystal-db](https://github.com/ourofoundation/crystal-db)): Materials
+Project, Alexandria, GNoME, every GGen structure and every cell submitted
+on Ouro, with PBE and Orb v3 energies, as five datasets (`Crystal DB
+structures`, `geometries`, `calculations`, `runs`, `run_structures`; all /
+materials-science, private). COD's experimental structures are a public
+dataset beside it. The hull and novelty routes read and write it, and so
+should you: it is the only complete, current reference. Don't use local
+database copies from other projects (`ggen.db` is from August and has no
+GNoME).
+
+Scripts in `lab/skill/scripts/`, run with the materials pyenv
+(`~/.pyenv/versions/materials/bin/python`); each prints its usage with `-h`:
+
+| Script | Use it for |
+|---|---|
+| `crystal.py hull <system>` | every phase near the hull on the Orb or PBE surface, from a local copy of the system (seconds). `--published` leaves out GGen and Ouro cells |
+| `crystal.py competitors <formula or CIF>` | what a candidate decomposes into on **both** surfaces: the list a PBE check needs |
+| `crystal.py novelty <CIFs>` | the novelty route's answer without a run each: known / new polymorph / new composition, with COD |
+| `crystal.py classify <relaxed CIFs>` | the false-positive checks in one pass: lattice decoration, vacancy-ordered decoration, known, ordering of a known type, or unmatched |
+| `crystal.py prototypes build` / `find` | near-hull MP and Alexandria structures to substitute into, filtered by elements, size, symmetry and `--made` (reported as synthesized) |
+| `screen.py run` / `pbe` / `tally` | a batch through the hull route as scratch uploads: Orb relax, hull distance, relaxed CIF back; then the published-PBE surface on the near-hull cells |
+| `pbe_check.py plan` / `submit` / `collect` / `balance` | a PBE stability check: competitors from both hulls, primitive cells, sorted sites, a cost range, the compound-only balance. `plan --basis TZDP` sets the basis for the whole balance (default DZP). Its cost range is from TZDP timings, so DZP runs land near the low end |
+
+For a survey that needs no geometry ("how many ternaries per Fe-Co-X system
+are on the hull"), query the datasets with `query_dataset` SQL. Filter on
+`chemsys` (indexed; elements in alphabetical order, `'Al-Fe-Ge'`); a scan of
+the whole table times out after about 8 s, so a whole-database question
+goes by key range, as `crystal.py prototypes build` does.
+
+What the database changes about a screen:
+- Every cell the hull route scores is stored and becomes a reference, yours
+  included. A lead's "0.0" is dated: re-read its hull after you add its
+  competitors (Zr6Fe12Si4C went from 0.0 to 4.7 when our own filled G phase
+  joined). `crystal.py hull --published` shows the hull without our cells.
+- "New" means absent from MP, Alexandria, GNoME and COD. It does not mean
+  absent from the literature (research.md).
 
 ## Structures in
 
@@ -83,9 +130,15 @@ symmetry. Read the space group from the result, not the request.
 For exact edits (one site, a specific ordering, strain), build the CIF
 yourself with pymatgen in the `materials` pyenv
 (`~/.pyenv/versions/materials/bin/python`). Keep the script in the campaign's
-`work/` folder and upload with `create_file(file_content_text=<cif>, file_name=...)`.
-Relax it with a route before measuring anything. Record the build as a
-`build` experiment with the parent's asset id and the operation.
+`work/` folder. Relax it with a route before measuring anything. Record the
+build as a `build` experiment with the parent's asset id and the operation.
+
+A cell becomes an Ouro file (`create_file(file_content_text=<cif>,
+file_name=...)`) when it is a candidate you will measure with a DFT route
+or cite in a post. Cells you are only screening stay local and go through
+`screen.py` as scratch uploads: an account holds 10,000 assets, and two
+screens filled half of that with inputs nobody opened (learnings L203).
+Build CIFs on the laptop; never relax or score with an ML potential there.
 
 ## Relax
 
@@ -117,17 +170,18 @@ Typical chain: relax → magCIF → Curie route, with the order screen read off
 the relax response. The magnet scorer (below) runs a similar Prophet screen
 inside one score.
 
-Before trusting Prophet in a new chemistry, read its known biases in
-`lab/notebook/learnings.md` (L020–L023 as of 2026-10-31: Js runs high,
-misclassified orderings on known magnets, Curie error and what Heisenberg Tc
-can't see). Calibrate against a measured compound in the same family.
+Before trusting Prophet in a new chemistry, read its rows in
+`lab/notebook/instruments.md`: Js runs high by an amount that depends on
+the element, some orderings are misclassified, and its Curie estimate
+ranks within a family at best. Calibrate against a measured compound in
+the same family.
 
 ## Measure
 
 | Property | Route | id | Price | Notes |
 |---|---|---|---|---|
 | Structure facts | `hermes/extract-crystal-structure-metadata` | `056f8ca8-8e0b-4a51-b365-f4b59395b2aa` | free | formula, space group, lattice, volume |
-| e_hull | `mmoderwell/calculate-energy-above-the-convex-hull` | `75fe7f4b-22f5-4883-aa1d-378fd42da47c` | paid, async | input `structure`, already relaxed (max force ≤ 0.05 eV/Å) unless `allow_unrelaxed: true`, which relaxes with Orb first. `energy_surface` defaults to Orb v3 (every reference scored by Orb). The PBE option uses published PBE references but still scores **your** cell with Orb, so it can differ from the Orb surface by ~20 meV/atom. Record which surface, and compare like with like. `include_phase_diagram: true` gives the neighbor phases without a post |
+| e_hull | `mmoderwell/calculate-energy-above-the-convex-hull` | `75fe7f4b-22f5-4883-aa1d-378fd42da47c` | free, async | input `structure`, already relaxed (max force on an atom **or the cell** ≤ 0.05 eV/Å) unless `allow_unrelaxed: true`, which relaxes with Orb first and returns the relaxed cell as `relaxed_cif` with its space group, so a screen needs no relax route. Cells relaxed before 2026-11-13 can fail the relaxed check: that recipe left the cell strained. `energy_surface` defaults to Orb v3 (every reference scored by Orb). `pbe` uses published PBE references but still scores **your** cell with Orb; it ranked candidates better than the Orb surface in sun-tetragonal. Record which surface, and compare like with like. `include_phase_diagram: true` gives the neighbor phases without a post. Accepts scratch uploads. An Orb hull distance can be 30 meV/atom off PBE either way on a new cell (learnings L198, L206): it selects candidates for `pbe_check.py`, it does not establish stability |
 | Dynamic stability | `mmoderwell/check-phonon-stability` | `69fc4538-ff58-42fd-a881-9ede1801a6f3` | $0.0009/s | input `file`; imaginary modes → unstable |
 | Phonon bands | `mmoderwell/calculate-phonon-dispersion-and-band-structure` | `c4d7aa14-f5a7-496e-93a5-542e09482eb5` | paid, async | |
 | Raw-material cost | `hermes/estimate-raw-material-cost-per-kg` | `9028cd75-e8ee-4f0a-bf41-c360f64cb8ad` | free | |
@@ -151,11 +205,48 @@ can't see). Calibrate against a measured compound in the same family.
 
 ## Habits
 
-- Calibrate before trusting. Run a route on a known material with a measured
-  value in the same chemistry, and record it as a `calibration` candidate.
-  Route-vs-experiment offsets go in `learnings.md`.
+- Calibrate before trusting. `lab/notebook/instruments.md` has a row for
+  each route in each structure family it has been checked in: read the row
+  before quoting a number, and when there is none, run the route on a made
+  compound of the family with a measured value first. Record that as a
+  `calibration` candidate and write the row (notebook.md).
+- Calibrate a new structure type in two descriptions: once on the
+  conventional cell and once on the reduced primitive one. They must agree.
+  Equal 100 and 010 readings prove nothing on a tilted cell; compare 100
+  with 110. An anisotropy result without `spin_rotation: 2` on a cell whose
+  `direction_frame` directions mix z with x or y predates the 2026-11-12
+  fix and is wrong (learnings L190).
 - Treat a DFT number from a coarse setting as a sign, not a value. Rerun
   the result you'll act on at a converged setting before calling it a lead.
+- Basis: use `basis_size: "DZP"` for DFT runs unless the user asks for
+  TZDP (Matt, 2026-11-13: "generally, lets just use dzp", for future runs).
+  Keep one basis within a comparison: an energy balance, a relax followed
+  by an anisotropy run on that cell, or a number set beside an earlier
+  one. Notebook results before this date are mostly TZDP; say which basis
+  a number is from when two meet.
+- Before any DFT run: reduce the cell to its primitive (the hull route
+  returns conventional cells, twice the atoms and about eight times the
+  time) and write the sites in the order the routes read a CIF: grouped
+  by element, elements sorted by electronegativity (pymatgen's sorted
+  order: Ti, Mn, Al; Zr, Fe, Si), not alphabetically. `initial_magmoms`
+  is applied one per site in that order, so build a seed list from
+  `Structure.from_file(cif)`, never from the order of the file's lines. On
+  every seeded run read `magnetic_sublattice` (the seeds as applied, with
+  the element of each) and `site_moments` before using the energy: a seed
+  that landed on Al leaves Mn at zero, converges non-magnetic and returns
+  success (learnings L245). A DFT call stops uncharged at 3600 s; the same
+  body submitted again resumes from the saved density, a changed body
+  starts over. `pbe_check.py` writes cells in the read order and prints
+  the applied seeds in `collect`.
+- A phase known to be non-magnetic (FeSi, ZrFeSi, a carbide) goes in a
+  balance with `nspin: "non_spin"` on the SCF or relaxation route: a
+  spin-polarised run can stop in a magnetic local minimum above the ground
+  state (FeSi: 3-6 meV/atom, learnings L213), and the non-spin run costs
+  about half. Before ouro-dft 189de47 (2026-11-14) all-zero
+  `initial_magmoms` were silently replaced with 1 µB per atom by ABACUS.
+- Build energy balances from compounds only. Formation energies from the
+  elements are off on this LCAO setup (about 190 meV per Al atom), while
+  compound-only reactions match published PBE to a few meV/atom.
 - Route-specific traps found in past work are in `lab/notebook/learnings.md`
   under "Routes and measurement". Read them before the first DFT run in a
   session.
