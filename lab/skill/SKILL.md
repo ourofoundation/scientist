@@ -370,10 +370,12 @@ The checks, which are the table's columns:
   decomposes into: a check on other phases of the same elements says
   nothing about the ones in the balance. An Orb hull, or published-PBE
   references with the cell scored by Orb, does not pass this. The PBE
-  number is judged against the user's screening line where `campaign.md`
-  records one, otherwise against the objective's target, and a margin
-  smaller than the setup's own error on its reference reactions is not
-  settled either way. Phonons are run on the cell the properties were
+  number is judged against the hull limit `campaign.md` records for a
+  claim. A tighter screening line, where the user has set one, cuts pools
+  of unmeasured cells; it is not the bar for a cell whose properties are
+  measured, though a lower hull always ranks higher. A margin smaller
+  than the setup's own error on its reference reactions is not settled
+  either way. Phonons are run on the cell the properties were
   measured on.
 - **Settings.** The number stays inside its target when each setting the
   route is sensitive to in this family is tightened: basis, k-mesh, the
