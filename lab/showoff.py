@@ -29,6 +29,20 @@ _atom_site_moment loop (the DFT relaxation route writes one) unless magnet.json 
 
 With --hull as well, the hull plays first and the card takes its place at "start".
 
+"acts" in magnet.json add sections after the card that act the computed numbers out on the
+crystal, each about 7 s, in the order given:
+
+     "acts": [{"type": "heat", "tc": 959, "curve": "curie_curve.json", "t_max": 1250},
+              {"type": "field", "k1": 0.98, "js": 1.26, "h_max": 2.4}]
+
+heat: the temperature climbs past the Curie point and back. The atoms vibrate (amplitude
+grows as sqrt(T) from "vibration" angstrom at 300 K, default 0.1, a little larger than life) and the moments lose their order following
+"curve", the route's own M(T) as [[kelvin, order parameter], ...] or a file of that, so they
+are scattered by "tc". field: a field is applied across the easy axis and the moments
+turn toward it by the angle a uniaxial magnet allows, sin(theta) = H / Ha with the
+anisotropy field Ha = 2 K1 / Js ("k1" in MJ/m3, "js" in T), then spring back when it is
+released. The right panel plots the same thing: M(T), or the hard-axis magnetization curve.
+
 Binary and ternary systems get the hull itself; larger systems get an energy ladder
 against the phases the candidate would otherwise decompose into.
 
@@ -199,7 +213,7 @@ def crystal_view(cif, bonds=None, scale=1.15):
     )
 
 
-def web_frames(view, reps, states, width, height, workdir, polyhedra=True, moments=None):
+def web_frames(view, reps, states, width, height, workdir, polyhedra=True, moments=None, extras=None):
     """Render the crystal for each (u, yaw, pitch, zoom) state; returns the PNG paths."""
     import json
     import os
@@ -212,12 +226,14 @@ def web_frames(view, reps, states, width, height, workdir, polyhedra=True, momen
     subprocess.run([str(FRONTEND / "node_modules/.bin/esbuild"), str(WEB / "scene.ts"), "--bundle", "--format=iife",
                     f"--alias:frontend-lib={FRONTEND / 'lib'}", f"--outfile={bundle}", "--log-level=warning"],
                    check=True, env=env)
+    extras = extras or [{}] * len(states)
     job = dict(
         bundle=str(bundle),
         setup=dict(view=view, tiling=[int(r) for r in reps], grow=[list(g) for g in GROW], polyhedra=polyhedra,
                    width=int(width), height=int(height), background=BG,
                    box=matplotlib.colors.to_hex(BOX), unit=matplotlib.colors.to_hex(UNIT), moments=moments),
-        frames=[dict(u=float(u), yaw=float(y), pitch=float(p), zoom=float(z)) for u, y, p, z in states],
+        frames=[dict(u=float(u), yaw=float(y), pitch=float(p), zoom=float(z), **x)
+                for (u, y, p, z), x in zip(states, extras)],
     )
     (workdir / "job.json").write_text(json.dumps(job))
     frames = workdir / "frames"
@@ -392,6 +408,159 @@ def magnet_scene(spec):
                     alpha=fade(tau, 0.5 + 0.42 * len(rows)), linespacing=1.5)
 
     return draw
+
+
+ACT_START = 10.0  # where the first act begins on the timeline (after the card has filled in)
+ACT_LEN = 7.0
+ACTS = []  # the acts of this video, set by main() from magnet.json
+
+
+def piecewise(x, knots):
+    """Smooth path through (x, value) knots: eased between neighbours, held outside."""
+    if x <= knots[0][0]:
+        return knots[0][1]
+    for (x0, v0), (x1, v1) in zip(knots, knots[1:]):
+        if x <= x1:
+            return v0 + (v1 - v0) * float(inout((x - x0) / (x1 - x0)))
+    return knots[-1][1]
+
+
+def order_to_weight():
+    """How far to pull each moment toward the axis so that the average projection is m.
+    A moment is drawn along normalize(w * axis + (1 - w) * random unit vector)."""
+    rng = np.random.default_rng(7)
+    n = rng.normal(size=(4000, 3))
+    n /= np.linalg.norm(n, axis=1)[:, None]
+    ws = np.linspace(0, 1, 101)
+    ms = []
+    for w in ws:
+        d = (1 - w) * n + np.array([0, 0, w])
+        ms.append((d[:, 2] / np.linalg.norm(d, axis=1)).mean())
+    ms = np.array(ms)
+    return lambda m: float(np.interp(m, ms, ws))
+
+
+def load_act(act, base):
+    """Fill in an act's derived numbers once."""
+    import json
+
+    act = dict(act)
+    if act["type"] == "heat":
+        curve = act.get("curve")
+        if isinstance(curve, str):
+            curve = json.loads((Path(base) / curve).read_text())
+        curve = np.array(sorted(curve), float)
+        # Classical Monte Carlo does not reach 1 at low temperature: scale to its coldest point.
+        curve[:, 1] = np.clip(curve[:, 1] / curve[0, 1], 0, 1)
+        act["curve"] = curve
+        act.setdefault("t_max", 1.3 * act["tc"])
+        act["weight"] = order_to_weight()
+    elif act["type"] == "field":
+        act["ha"] = 2 * act["k1"] / act["js"]  # tesla: mu0 Ha = 2 mu0 K1 / Js, K1 in MJ/m3, Js in T
+        act["ha"] *= 4e-7 * np.pi * 1e6
+        act.setdefault("h_max", 1.2 * act["ha"])
+    return act
+
+
+def act_state(u):
+    """What the crystal is doing at timeline position u: which act, how far in, and the
+    physical state (temperature and order, or field and tilt)."""
+    k = int((u - ACT_START) // ACT_LEN) if u >= ACT_START else -1
+    if k < 0 or k >= len(ACTS):
+        return None
+    act, tau = ACTS[k], u - ACT_START - k * ACT_LEN
+    if act["type"] == "heat":
+        T = piecewise(tau, [(0.0, 0.0), (0.9, 300.0), (4.6, act["t_max"]), (5.3, act["t_max"]), (6.6, 300.0)])
+        m = float(np.interp(T, act["curve"][:, 0], act["curve"][:, 1], left=1.0))
+        if T < act["curve"][0, 0]:
+            m = 1.0 + (act["curve"][0, 1] - 1.0) * T / act["curve"][0, 0]
+        w = act["weight"](m)
+        # Hand back a fully ordered crystal to whatever comes next.
+        w = max(w, float(inout((tau - 6.6) / 0.4)))
+        vib = act.get("vibration", 0.1) * np.sqrt(max(T, 0) / 300.0)
+        return dict(act=k, tau=tau, type="heat", T=T, m=m, frame=dict(vib=float(vib), order=float(w)))
+    h1, hmax = min(1.0, 0.5 * act["ha"]), act["h_max"]
+    H = piecewise(tau, [(0.0, 0.0), (0.8, 0.0), (2.2, h1), (2.9, h1), (4.3, hmax), (4.9, hmax), (5.25, 0.0)])
+    s = min(H / act["ha"], 1.0)
+    theta = float(np.arcsin(s))
+    if tau > 5.25:
+        # Released: the moments overshoot the axis a little and settle.
+        x = tau - 5.25
+        theta = 0.14 * np.exp(-x / 0.28) * np.sin(-2 * np.pi * x / 0.5)
+    return dict(act=k, tau=tau, type="field", H=H, s=s, theta=theta,
+                frame=dict(tilt=float(theta), field=float(H / hmax)))
+
+
+def act_panel(act):
+    """draw(ax, state) for an act's right-hand panel."""
+
+    def fade(tau, start, dur=0.45):
+        return float(np.clip((tau - start) / dur, 0, 1))
+
+    def base(ax, tau, title, xlabel, ylabel):
+        ax.clear()
+        ax.set_facecolor(BG)
+        a = fade(tau, 0.0) * (1 - fade(tau, ACT_LEN - 0.35, 0.3))
+        for name, sp in ax.spines.items():
+            sp.set_visible(name in ("bottom", "left"))
+            sp.set_color(DIM)
+            sp.set_alpha(a)
+        ax.tick_params(colors=DIM, labelsize=13)
+        for lab in ax.get_xticklabels() + ax.get_yticklabels():
+            lab.set_alpha(a)
+        ax.set_xlabel(xlabel, color=DIM, fontsize=14, alpha=a)
+        ax.set_ylabel(ylabel, color=DIM, fontsize=14, alpha=a)
+        ax.text(0.0, 1.30, title, transform=ax.transAxes, color=ACCENT, fontsize=22, fontweight="bold",
+                ha="left", va="bottom", alpha=a)
+        return a
+
+    def heat(ax, st):
+        tau, T = st["tau"], st["T"]
+        c = act["curve"]
+        a = base(ax, tau, act.get("title", "Heat it"), "temperature (K)", "magnetization  M / M$_0$")
+        ax.set_xlim(0, max(act["t_max"] * 1.05, c[-1, 0] * 0.8))
+        ax.set_ylim(0, 1.08)
+        ax.plot(c[:, 0], c[:, 1], color=LINE, lw=2.5, alpha=a, zorder=2)
+        done = c[:, 0] <= T
+        ax.plot(np.append(c[done, 0], T), np.append(c[done, 1], st["m"]), color=ACCENT, lw=3, alpha=a, zorder=3)
+        ax.scatter([T], [st["m"]], s=170, color=ACCENT, edgecolor=BG, lw=1.5, zorder=5, alpha=a)
+        ax.axvline(act["tc"], color=FG, lw=1.2, ls=(0, (4, 3)), alpha=0.55 * a)
+        ax.text(act["tc"], 1.09, f"Curie point  ~{act['tc']:.0f} K", color=FG, fontsize=13, ha="center", va="bottom",
+                alpha=a)
+        hot = T >= act["tc"]
+        ax.text(0.0, 1.17, f"{T:,.0f} K", transform=ax.transAxes, color=RIVAL if hot else FG, fontsize=30,
+                fontweight="bold", ha="left", va="bottom", alpha=a)
+        ax.text(1.0, 1.185, "magnetic order lost" if hot else "moments still aligned", transform=ax.transAxes,
+                color=RIVAL if hot else DIM, fontsize=14, ha="right", va="bottom", alpha=a)
+        ax.text(0.0, -0.3, act.get("footnote", "M(T): Monte Carlo on DFT exchange couplings.\nVibrations drawn larger than life."),
+                transform=ax.transAxes, color=DIM, fontsize=11.5, ha="left", va="top", alpha=a, linespacing=1.5)
+
+    def field(ax, st):
+        tau, H, ha = st["tau"], st["H"], act["ha"]
+        a = base(ax, tau, act.get("title", "Push the moments off axis"), "applied field across the easy axis (T)",
+                 "magnetization along the field  M / M$_s$")
+        ax.set_xlim(0, act["h_max"] * 1.04)
+        ax.set_ylim(0, 1.12)
+        hs = np.linspace(0, act["h_max"], 200)
+        ax.plot(hs, np.minimum(hs / ha, 1), color=LINE, lw=2.5, alpha=a, zorder=2)
+        m = hs <= H
+        ax.plot(hs[m], np.minimum(hs[m] / ha, 1), color=ACCENT, lw=3, alpha=a, zorder=3)
+        ax.scatter([H], [min(H / ha, 1)], s=170, color=ACCENT, edgecolor=BG, lw=1.5, zorder=5, alpha=a)
+        ax.axvline(ha, color=FG, lw=1.2, ls=(0, (4, 3)), alpha=0.55 * a)
+        ax.text(ha, 1.13, f"anisotropy field  {ha:.1f} T", color=FG, fontsize=13, ha="center", va="bottom", alpha=a)
+        ax.text(0.0, 1.17, f"{H:.2f} T", transform=ax.transAxes, color=FIELD, fontsize=30, fontweight="bold",
+                ha="left", va="bottom", alpha=a)
+        deg = abs(np.degrees(st["theta"]))
+        note = ("released: back on the easy axis" if tau > 5.25 else
+                "turned all the way" if st["s"] >= 1 else f"moments tilt {deg:.0f}° from the easy axis")
+        ax.text(1.0, 1.185, note, transform=ax.transAxes, color=DIM, fontsize=14, ha="right", va="bottom", alpha=a)
+        ax.text(0.0, -0.3, act.get("footnote", "Uniaxial magnet: sin(tilt) = H / H$_a$,  H$_a$ = 2K$_1$ / J$_s$.\nThe stiffer the easy axis, the more field it takes."),
+                transform=ax.transAxes, color=DIM, fontsize=11.5, ha="left", va="top", alpha=a, linespacing=1.5)
+
+    return heat if act["type"] == "heat" else field
+
+
+FIELD = "#7cc4ff"  # the applied field, on the crystal and in its panel
 
 
 def tex_units(text):
@@ -742,13 +911,17 @@ def render(cif, out, caption, handle, repeat, seconds, fps, size, hull=None, nam
             axis = np.array(mspec.get("axis") or lat[2], float)
             vectors = np.outer(mspec["moments"], axis / np.linalg.norm(axis))
         if vectors is not None:
-            moments = dict(vectors=vectors.tolist(), start=mag_start, color=ACCENT)
+            moments = dict(vectors=vectors.tolist(), start=mag_start, color=ACCENT, field=FIELD)
         mag_draw = magnet_scene(mspec)
         if hax is None:
             fig.delaxes(ax)
             ax = fig.add_axes([0.0, 0.07, 0.6, 0.76])
         max_ = fig.add_axes([0.635, 0.2, 0.33, 0.58])
         max_.axis("off")
+        # The acts plot in a smaller box, leaving room for their headline above and note below.
+        pax = fig.add_axes([0.675, 0.3, 0.29, 0.34])
+        pax.set_visible(False)
+        panels = [act_panel(a_) for a_ in ACTS]
     dos_draw, dax = None, None
     if dos:
         import json
@@ -838,7 +1011,12 @@ def render(cif, out, caption, handle, repeat, seconds, fps, size, hull=None, nam
         import tempfile
 
         scratch = tempfile.mkdtemp(prefix="showoff_")  # hundreds of MB of PNGs; removed at the end
-        paths = web_frames(view, reps, states, w, h, scratch, polyhedra=polyhedra, moments=moments)
+        extras = []
+        for t in times:
+            st = act_state(t * TIMELINE / seconds) if mag_draw else None
+            # The clock drives the thermal motion; it runs in real seconds.
+            extras.append(dict(clock=float(t), **(st["frame"] if st else {})))
+        paths = web_frames(view, reps, states, w, h, scratch, polyhedra=polyhedra, moments=moments, extras=extras)
         images = dict(zip(times, paths))
         feather = None
 
@@ -891,6 +1069,17 @@ def render(cif, out, caption, handle, repeat, seconds, fps, size, hull=None, nam
         u = t * TIMELINE / seconds
         if arrow_note is not None:
             arrow_note.set_alpha(float(np.clip((u - mag_start - 0.3) / 0.5, 0, 1)))
+        st = act_state(u)
+        if st is not None:
+            if hax is not None:
+                hax.set_visible(False)
+            max_.set_visible(False)
+            pax.set_visible(True)
+            panels[st["act"]](pax, st)
+            return
+        if u >= ACT_START:  # past the last act: back to the card
+            pax.set_visible(False)
+            max_.set_visible(True)
         if hax is not None:
             if u < mag_start:
                 max_.set_visible(False)
@@ -898,7 +1087,12 @@ def render(cif, out, caption, handle, repeat, seconds, fps, size, hull=None, nam
             hax.set_visible(False)
             max_.set_visible(True)
         # Alone, the card starts early enough that its rows are landing as the arrows come in.
-        mag_draw(max_, u - mag_start if hax is not None else u - max(mag_start - 1.6, 0.4))
+        tau = u - mag_start if hax is not None else u - max(mag_start - 1.6, 0.4)
+        mag_draw(max_, tau)
+        # The card clears for the first act.
+        if ACTS and u > ACT_START - 0.4:
+            for artist in max_.texts + max_.lines:
+                artist.set_alpha((artist.get_alpha() or 1) * float(np.clip((ACT_START - u) / 0.4, 0, 1)))
 
     def hull_at(t):
         # Starts with the supercell build and finishes before the push-in ends. With a DOS act,
@@ -983,9 +1177,16 @@ def main():
         SHOTS[1:] = [(3.0, 1.5, (115, 7, 1.0), "soft"), (4.7, 1.7, (205, 10, 1.3), "soft"),
                      (6.8, 2.2, (250, 13, 1.0), "inout")]
         if not a.dos:
-            globals()["TIMELINE"] = 10.0
+            import json
+
+            spec = json.loads(Path(a.magnet).read_text())
+            ACTS.extend(load_act(act, Path(a.magnet).parent) for act in spec.get("acts", []))
+            globals()["TIMELINE"] = ACT_START + ACT_LEN * len(ACTS)
+            for k in range(len(ACTS)):
+                # A slow turn through each act, staying side-on to the moments.
+                SHOTS.append((ACT_START + ACT_LEN * k + 0.2, 3.0, (250 + 40 * (k + 1), 9, 0.86), "inout"))
             if a.seconds == 7:
-                a.seconds = 10
+                a.seconds = TIMELINE
     globals().update(THEMES["light" if a.light else "dark"])
     globals()["PUSH"] = a.push
     out = a.out or str(Path(a.cif).with_suffix(".png" if a.frame is not None else ".mp4"))

@@ -40,7 +40,7 @@ interface Job {
   box: string
   unit: string
   /** Magnetic moments: a Cartesian vector (muB) per site of the view, drawn as arrows from `start`. */
-  moments?: { vectors: Vec3[]; start: number; color: string } | null
+  moments?: { vectors: Vec3[]; start: number; color: string; field?: string } | null
 }
 
 interface State {
@@ -49,6 +49,16 @@ interface State {
   yaw: number
   pitch: number
   zoom: number
+  /** Real time in seconds: drives the thermal motion. */
+  clock?: number
+  /** Thermal vibration amplitude in angstrom. */
+  vib?: number
+  /** 1: moments along their own direction; 0: scattered at random. */
+  order?: number
+  /** Coherent tilt of every moment away from its axis toward the applied field, in radians. */
+  tilt?: number
+  /** Applied field, 0 to 1 of its largest value. */
+  field?: number
 }
 
 declare global {
@@ -83,6 +93,33 @@ let appear: number[] = []
 let shaftMesh: THREE.InstancedMesh | null = null
 let headMesh: THREE.InstancedMesh | null = null
 let arrowAtoms: number[] = []
+let fieldShafts: THREE.InstancedMesh | null = null
+let fieldHeads: THREE.InstancedMesh | null = null
+const FIELD_ARROWS = 5
+// Per-atom random phases for the thermal motion and for the wandering of a disordered moment.
+let jitter: number[][] = []
+
+function rng(seed: number) {
+  return () => {
+    seed |= 0
+    seed = (seed + 0x6d2b79f5) | 0
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+/** A smooth random walk in [-1, 1]^3: two sines per axis, phases from the atom's row of `jitter`. */
+function wander(row: number[], offset: number, time: number, speed: number): THREE.Vector3 {
+  const out = [0, 0, 0]
+  for (let axis = 0; axis < 3; axis++) {
+    const k = offset + axis * 4
+    out[axis] =
+      0.65 * Math.sin(speed * (0.8 + 0.7 * row[k]) * time + 6.283 * row[k + 1]) +
+      0.35 * Math.sin(speed * (1.9 + 1.3 * row[k + 2]) * time + 6.283 * row[k + 3])
+  }
+  return new THREE.Vector3(...out)
+}
 // Arrow length: the ball's diameter plus this much per Bohr magneton.
 const ARROW_PER_MUB = 0.55
 const SHAFT_RADIUS = 0.075
@@ -244,7 +281,17 @@ window.setup = (j: Job) => {
     shaftMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(1, 1, 1, 20), mat(), Math.max(1, arrowAtoms.length))
     headMesh = new THREE.InstancedMesh(new THREE.ConeGeometry(1, 1, 24), mat(), Math.max(1, arrowAtoms.length))
     scene.add(shaftMesh, headMesh)
+    const fmat = () =>
+      new THREE.MeshStandardMaterial({
+        color: j.moments!.field ?? "#7cc4ff", roughness: 0.4, transparent: true, opacity: 0.9,
+        emissive: new THREE.Color(j.moments!.field ?? "#7cc4ff"), emissiveIntensity: 0.4,
+      })
+    fieldShafts = new THREE.InstancedMesh(new THREE.CylinderGeometry(1, 1, 1, 20), fmat(), FIELD_ARROWS)
+    fieldHeads = new THREE.InstancedMesh(new THREE.ConeGeometry(1, 1, 24), fmat(), FIELD_ARROWS)
+    scene.add(fieldShafts, fieldHeads)
   }
+  const random = rng(20261118)
+  jitter = atoms.map(() => Array.from({ length: 24 }, random))
 
   boxLines = new THREE.LineSegments(boxGeometry([1, 1, 1]),
     new THREE.LineBasicMaterial({ color: j.box, transparent: true, opacity: 0.6 }))
@@ -255,7 +302,8 @@ window.setup = (j: Job) => {
 
 const Y = new THREE.Vector3(0, 1, 0)
 
-window.frame = ({ u, yaw, pitch, zoom }: State) => {
+window.frame = (state: State) => {
+  const { u, yaw, pitch, zoom } = state
   const L = boxAt(u)
   const center = new THREE.Vector3(...fracToCart(matrix, L.map((x) => x / 2) as Vec3))
   // Frame the current box: the camera pulls back as the supercell builds.
@@ -286,9 +334,16 @@ window.frame = ({ u, yaw, pitch, zoom }: State) => {
 
   const grow = appear.map((t) => easeOut((u - t) / 0.5))
   const m = new THREE.Matrix4()
+  // Where each atom is drawn: its site, plus thermal motion when the crystal is hot.
+  const vib = state.vib ?? 0
+  const clock = state.clock ?? 0
+  const at = atoms.map((atom, i) => {
+    const p = new THREE.Vector3(...atom.position)
+    return vib > 0 ? p.addScaledVector(wander(jitter[i], 0, clock, 9), vib) : p
+  })
   atoms.forEach((atom, i) => {
     const r = ATOM_RADII[atom.z] * grow[i]
-    m.makeScale(r + 1e-6, r + 1e-6, r + 1e-6).setPosition(...atom.position)
+    m.makeScale(r + 1e-6, r + 1e-6, r + 1e-6).setPosition(at[i])
     atomMesh.setMatrixAt(i, m)
   })
   atomMesh.instanceMatrix.needsUpdate = true
@@ -302,8 +357,8 @@ window.frame = ({ u, yaw, pitch, zoom }: State) => {
   bondPairs.forEach(({ a, b }, i) => {
     const g = Math.min(grow[a], grow[b])
     const r = g < 0.05 ? 1e-6 : BOND_RADIUS * g
-    s.set(...atoms[a].position)
-    e.set(...atoms[b].position)
+    s.copy(at[a])
+    e.copy(at[b])
     mid.addVectors(s, e).multiplyScalar(0.5)
     bondMesh.setMatrixAt(2 * i, span(s, mid, r))
     bondMesh.setMatrixAt(2 * i + 1, span(e, mid, r))
@@ -319,6 +374,31 @@ window.frame = ({ u, yaw, pitch, zoom }: State) => {
     face.visible = polyEdges[k].visible = a > 0.01
   })
 
+  const fieldDir = new THREE.Vector3(...matrix[0]).normalize()
+  if (fieldShafts && fieldHeads) {
+    // The applied field: arrows across the top of the box, along a, growing with the field.
+    const f = state.field ?? 0
+    const q = new THREE.Quaternion().setFromUnitVectors(Y, fieldDir)
+    const a = new THREE.Vector3(...matrix[0]).multiplyScalar(L[0])
+    const b = new THREE.Vector3(...matrix[1]).multiplyScalar(L[1])
+    const c = new THREE.Vector3(...matrix[2]).multiplyScalar(L[2])
+    const up = c.clone().normalize()
+    const length = a.length() * (0.35 + 0.75 * f)
+    for (let k = 0; k < FIELD_ARROWS; k++) {
+      const w = f < 0.01 ? 1e-6 : 0.5 + 0.5 * f
+      const head = 0.75
+      const mid = a.clone().multiplyScalar(0.5)
+        .addScaledVector(b, k / (FIELD_ARROWS - 1))
+        .add(c).addScaledVector(up, 1.5)
+      const tail = mid.clone().addScaledVector(fieldDir, -length / 2)
+      m.compose(tail.clone().addScaledVector(fieldDir, (length - head) / 2), q, new THREE.Vector3(0.11 * w, length - head, 0.11 * w))
+      fieldShafts.setMatrixAt(k, m)
+      m.compose(tail.clone().addScaledVector(fieldDir, length - head / 2), q, new THREE.Vector3(0.3 * w, head, 0.3 * w))
+      fieldHeads.setMatrixAt(k, m)
+    }
+    fieldShafts.instanceMatrix.needsUpdate = true
+    fieldHeads.instanceMatrix.needsUpdate = true
+  }
   if (shaftMesh && headMesh && job.moments) {
     const q = new THREE.Quaternion()
     arrowAtoms.forEach((i, k) => {
@@ -328,8 +408,19 @@ window.frame = ({ u, yaw, pitch, zoom }: State) => {
       const g = Math.min(grow[i], easeOut((u - Math.max(job.moments!.start, appear[i]) - 0.04 * (k % 12)) / 0.6))
       const length = (2 * ATOM_RADII[atoms[i].z] + ARROW_PER_MUB * mu) * g
       const dirv = v.normalize()
+      // An applied field turns every moment the same way, toward the field (the a axis).
+      if (state.tilt) {
+        const side = fieldDir.clone().addScaledVector(dirv, -fieldDir.dot(dirv)).normalize()
+        dirv.multiplyScalar(Math.cos(state.tilt)).addScaledVector(side, Math.sin(state.tilt))
+      }
+      // Heat scatters them: each wanders on its own, the more so the lower the order.
+      const order = state.order ?? 1
+      if (order < 1) {
+        const n = wander(jitter[i], 12, clock, 2.6).normalize()
+        dirv.multiplyScalar(order).addScaledVector(n, 1 - order).normalize()
+      }
       q.setFromUnitVectors(Y, dirv)
-      const c = new THREE.Vector3(...atoms[i].position)
+      const c = at[i].clone()
       const head = Math.min(HEAD_LENGTH, length * 0.45)
       const shaft = Math.max(length - head, 1e-6)
       const tail = c.clone().addScaledVector(dirv, -length / 2)
