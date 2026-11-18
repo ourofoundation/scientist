@@ -39,6 +39,8 @@ interface Job {
   /** Colour of the outer box and of the unit cell kept marked inside it. */
   box: string
   unit: string
+  /** Magnetic moments: a Cartesian vector (muB) per site of the view, drawn as arrows from `start`. */
+  moments?: { vectors: Vec3[]; start: number; color: string } | null
 }
 
 interface State {
@@ -78,6 +80,14 @@ let polyVertices: number[][] = []
 let boxLines: THREE.LineSegments
 let unitLines: THREE.LineSegments
 let appear: number[] = []
+let shaftMesh: THREE.InstancedMesh | null = null
+let headMesh: THREE.InstancedMesh | null = null
+let arrowAtoms: number[] = []
+// Arrow length: the ball's diameter plus this much per Bohr magneton.
+const ARROW_PER_MUB = 0.55
+const SHAFT_RADIUS = 0.075
+const HEAD_RADIUS = 0.2
+const HEAD_LENGTH = 0.42
 let matrix: [Vec3, Vec3, Vec3]
 
 /** Size of the built-up box along a, b, c, in cells, at timeline position u. */
@@ -223,6 +233,19 @@ window.setup = (j: Job) => {
     }
   }
 
+  if (j.moments) {
+    arrowAtoms = atoms
+      .map((atom, i) => (Math.hypot(...j.moments!.vectors[atom.site]) > 0.05 && !atom.outside ? i : -1))
+      .filter((i) => i >= 0)
+    const mat = () =>
+      new THREE.MeshStandardMaterial({
+        color: j.moments!.color, roughness: 0.35, emissive: new THREE.Color(j.moments!.color), emissiveIntensity: 0.35,
+      })
+    shaftMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(1, 1, 1, 20), mat(), Math.max(1, arrowAtoms.length))
+    headMesh = new THREE.InstancedMesh(new THREE.ConeGeometry(1, 1, 24), mat(), Math.max(1, arrowAtoms.length))
+    scene.add(shaftMesh, headMesh)
+  }
+
   boxLines = new THREE.LineSegments(boxGeometry([1, 1, 1]),
     new THREE.LineBasicMaterial({ color: j.box, transparent: true, opacity: 0.6 }))
   unitLines = new THREE.LineSegments(boxGeometry([1, 1, 1]),
@@ -295,6 +318,30 @@ window.frame = ({ u, yaw, pitch, zoom }: State) => {
     ;(polyEdges[k].material as THREE.LineBasicMaterial).opacity = 0.7 * a
     face.visible = polyEdges[k].visible = a > 0.01
   })
+
+  if (shaftMesh && headMesh && job.moments) {
+    const q = new THREE.Quaternion()
+    arrowAtoms.forEach((i, k) => {
+      const v = new THREE.Vector3(...job.moments!.vectors[atoms[i].site])
+      const mu = v.length()
+      // Arrows come in after the atom, a little later the further up the box it sits.
+      const g = Math.min(grow[i], easeOut((u - Math.max(job.moments!.start, appear[i]) - 0.04 * (k % 12)) / 0.6))
+      const length = (2 * ATOM_RADII[atoms[i].z] + ARROW_PER_MUB * mu) * g
+      const dirv = v.normalize()
+      q.setFromUnitVectors(Y, dirv)
+      const c = new THREE.Vector3(...atoms[i].position)
+      const head = Math.min(HEAD_LENGTH, length * 0.45)
+      const shaft = Math.max(length - head, 1e-6)
+      const tail = c.clone().addScaledVector(dirv, -length / 2)
+      const w = g < 0.03 ? 1e-6 : 1
+      m.compose(tail.clone().addScaledVector(dirv, shaft / 2), q, new THREE.Vector3(SHAFT_RADIUS * w, shaft, SHAFT_RADIUS * w))
+      shaftMesh!.setMatrixAt(k, m)
+      m.compose(tail.clone().addScaledVector(dirv, shaft + head / 2), q, new THREE.Vector3(HEAD_RADIUS * w, Math.max(head, 1e-6), HEAD_RADIUS * w))
+      headMesh!.setMatrixAt(k, m)
+    })
+    shaftMesh.instanceMatrix.needsUpdate = true
+    headMesh.instanceMatrix.needsUpdate = true
+  }
 
   boxLines.geometry.dispose()
   boxLines.geometry = boxGeometry(L)

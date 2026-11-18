@@ -16,6 +16,19 @@ viewer can look the known phase up. "verdict" and "rivals" (a list of formulas) 
 headline the script would compute, for when the candidate's margin comes from a check
 against a different set of phases than the ones drawn.
 
+--magnet magnet.json shows the magnetism: arrows on the atoms for the site moments, and a
+card of computed properties in the right panel. The moments come from the CIF's own
+_atom_site_moment loop (the DFT relaxation route writes one) unless magnet.json gives them:
+
+    {"title": "Computed magnetic properties",
+     "rows": [{"label": "Magnetization", "value": "1.26", "unit": "T"},
+              {"label": "Anisotropy", "value": "0.98", "unit": "MJ/m3", "note": "easy axis along c"}],
+     "footnote": "DFT (PBE). Computed, not measured.",
+     "moments": [0, 2.2, 2.2, 2.8, 2.7, 0, 0.3, 0.3],   # optional: muB per site, CIF order
+     "start": 3.0}                                        # optional: when the arrows come in
+
+With --hull as well, the hull plays first and the card takes its place at "start".
+
 Binary and ternary systems get the hull itself; larger systems get an energy ladder
 against the phases the candidate would otherwise decompose into.
 
@@ -186,7 +199,7 @@ def crystal_view(cif, bonds=None, scale=1.15):
     )
 
 
-def web_frames(view, reps, states, width, height, workdir, polyhedra=True):
+def web_frames(view, reps, states, width, height, workdir, polyhedra=True, moments=None):
     """Render the crystal for each (u, yaw, pitch, zoom) state; returns the PNG paths."""
     import json
     import os
@@ -203,7 +216,7 @@ def web_frames(view, reps, states, width, height, workdir, polyhedra=True):
         bundle=str(bundle),
         setup=dict(view=view, tiling=[int(r) for r in reps], grow=[list(g) for g in GROW], polyhedra=polyhedra,
                    width=int(width), height=int(height), background=BG,
-                   box=matplotlib.colors.to_hex(BOX), unit=matplotlib.colors.to_hex(UNIT)),
+                   box=matplotlib.colors.to_hex(BOX), unit=matplotlib.colors.to_hex(UNIT), moments=moments),
         frames=[dict(u=float(u), yaw=float(y), pitch=float(p), zoom=float(z)) for u, y, p, z in states],
     )
     (workdir / "job.json").write_text(json.dumps(job))
@@ -297,6 +310,93 @@ def dos_scene(spec, base):
     return draw
 
 
+
+
+def cif_moments(cif):
+    """Site moments (muB, signed along the moment's own direction) and their Cartesian vectors,
+    in pymatgen's site order, from a magCIF's _atom_site_moment loop. None if the file has none."""
+    import re
+
+    from pymatgen.core import Structure
+
+    text = Path(cif).read_text()
+    if "_atom_site_moment_label" not in text:
+        return None
+    s = Structure.from_file(cif)
+    # label -> fractional position, from the atom_site loop.
+    block = text.split("_atom_site_fract_x", 1)
+    head = text[: text.index("_atom_site_fract_x")].rsplit("loop_", 1)[1].split()
+    cols = head + ["_atom_site_fract_x"]
+    rest = block[1].splitlines()
+    while rest and rest[0].strip().startswith("_") or (rest and not rest[0].strip()):
+        if rest[0].strip().startswith("_"):
+            cols.append(rest[0].strip())
+        rest.pop(0)
+    li, xi = cols.index("_atom_site_label"), cols.index("_atom_site_fract_x")
+    where = {}
+    for line in rest:
+        f = line.split()
+        if len(f) < len(cols) or line.strip().startswith(("loop_", "_")):
+            break
+        where[f[li]] = np.array([float(re.sub(r"\(.*\)", "", v)) for v in f[xi : xi + 3]])
+    mom = {}
+    for line in text.split("_atom_site_moment_crystalaxis_z", 1)[1].splitlines():
+        f = line.split()
+        if len(f) == 4:
+            mom[f[0]] = np.array([float(v) for v in f[1:]])
+        elif f:
+            break
+    unit = s.lattice.matrix / np.linalg.norm(s.lattice.matrix, axis=1)[:, None]
+    vectors = np.zeros((len(s), 3))
+    for label, m in mom.items():
+        d = s.frac_coords - where[label]
+        d -= np.round(d)
+        k = int(np.argmin(np.linalg.norm(d @ s.lattice.matrix, axis=1)))
+        vectors[k] = m @ unit  # crystal-axis components -> Cartesian
+    return vectors
+
+
+def magnet_scene(spec):
+    """draw(ax, tau) for the card of computed magnetic properties. Rows come in one by one."""
+    rows = spec.get("rows", [])
+
+    def fade(tau, start, dur=0.45):
+        return float(np.clip((tau - start) / dur, 0, 1))
+
+    def draw(ax, tau):
+        ax.clear()
+        ax.set_facecolor(BG)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis("off")
+        a = fade(tau, 0.0)
+        ax.text(0.0, 1.0, spec.get("title", "Computed magnetic properties"), color=ACCENT, fontsize=22,
+                fontweight="bold", ha="left", va="top", alpha=a)
+        ax.plot([0, 1.0 * float(ease_out(tau / 0.8))], [0.915, 0.915], color=LINE, lw=1.5)
+        top, step = 0.84, min(0.135, 0.74 / max(len(rows), 1))
+        for k, row in enumerate(rows):
+            g = fade(tau, 0.5 + 0.42 * k)
+            if g <= 0:
+                continue
+            y = top - k * step + 0.02 * (1 - float(ease_out(g)))
+            ax.text(0.0, y, row["label"], color=DIM, fontsize=15, ha="left", va="center", alpha=g)
+            value = ax.text(0.47, y, tex_units(row["value"]), color=FG, fontsize=23, fontweight="bold", ha="left",
+                            va="center", alpha=g)
+            if row.get("unit"):
+                ax.annotate(tex_units(row["unit"]), (1, 0.5), xycoords=value, xytext=(7, -2), textcoords="offset points",
+                            color=FG, fontsize=15, ha="left", va="center", alpha=g)
+            if row.get("note"):
+                ax.text(0.47, y - 0.047, row["note"], color=DIM, fontsize=11.5, ha="left", va="center", alpha=g)
+        if spec.get("footnote"):
+            ax.text(0.0, -0.02, spec["footnote"], color=DIM, fontsize=11.5, ha="left", va="top",
+                    alpha=fade(tau, 0.5 + 0.42 * len(rows)), linespacing=1.5)
+
+    return draw
+
+
+def tex_units(text):
+    """m3 -> m^3 and muB -> mu_B, for matplotlib."""
+    return text.replace("m3", "m$^3$").replace("muB", "$\\mu_B$")
 
 
 def tex(formula):
@@ -574,7 +674,7 @@ def hull_scene(spec, comp, name=None):
 
 
 def render(cif, out, caption, handle, repeat, seconds, fps, size, hull=None, name=None, frame=None,
-           viewer="three", bonds=None, dos=None, polyhedra=True):
+           viewer="three", bonds=None, dos=None, polyhedra=True, magnet=None, bond_scale=1.15):
     atoms = read(cif)
     reps = np.array(repeat, int)
     pos, nums, sc = expand_boundary(atoms, tuple(reps))
@@ -627,6 +727,28 @@ def render(cif, out, caption, handle, repeat, seconds, fps, size, hull=None, nam
         hax = fig.add_axes([0.6, 0.2, 0.38, 0.52])
     else:
         ax = fig.add_axes([0.1, 0.06, 0.8, 0.8])
+    mag_draw, max_, mag_start, moments = None, None, 3.0, None
+    if magnet:
+        import json
+
+        mspec = json.loads(Path(magnet).read_text())
+        mag_start = float(mspec.get("start", 3.0))
+        vectors = cif_moments(cif)
+        if mspec.get("moments") is not None:
+            # Scalars along the easy axis (default c).
+            from pymatgen.core import Structure
+
+            lat = Structure.from_file(cif).lattice.matrix
+            axis = np.array(mspec.get("axis") or lat[2], float)
+            vectors = np.outer(mspec["moments"], axis / np.linalg.norm(axis))
+        if vectors is not None:
+            moments = dict(vectors=vectors.tolist(), start=mag_start, color=ACCENT)
+        mag_draw = magnet_scene(mspec)
+        if hax is None:
+            fig.delaxes(ax)
+            ax = fig.add_axes([0.0, 0.07, 0.6, 0.76])
+        max_ = fig.add_axes([0.635, 0.2, 0.33, 0.58])
+        max_.axis("off")
     dos_draw, dax = None, None
     if dos:
         import json
@@ -712,11 +834,11 @@ def render(cif, out, caption, handle, repeat, seconds, fps, size, hull=None, nam
         bb = ax.get_position()
         w, h = 2 * bb.width * fig.get_figwidth() * dpi, 2 * bb.height * fig.get_figheight() * dpi
         states = [(t * TIMELINE / seconds, *camera(t * TIMELINE / seconds, t)) for t in times]
-        view = crystal_view(cif, bonds)
+        view = crystal_view(cif, bonds, bond_scale)
         import tempfile
 
         scratch = tempfile.mkdtemp(prefix="showoff_")  # hundreds of MB of PNGs; removed at the end
-        paths = web_frames(view, reps, states, w, h, scratch, polyhedra=polyhedra)
+        paths = web_frames(view, reps, states, w, h, scratch, polyhedra=polyhedra, moments=moments)
         images = dict(zip(times, paths))
         feather = None
 
@@ -758,6 +880,26 @@ def render(cif, out, caption, handle, repeat, seconds, fps, size, hull=None, nam
                  ha="center", va="center")
         fig.text(x + 0.012, 0.045, el, color=FG, fontsize=size / 60, va="center")
 
+    arrow_note = None
+    if moments:
+        # On the legend line, right of the supercell label.
+        arrow_note = fig.text(pos_ax.x0 + pos_ax.width / 2 + 0.085, 0.045, "arrows: computed magnetic moments",
+                              ha="left", va="center", color=ACCENT, fontsize=size / 60, alpha=0)
+
+    def magnet_at(t):
+        # The card takes the right panel at its start (after the hull, when there is one).
+        u = t * TIMELINE / seconds
+        if arrow_note is not None:
+            arrow_note.set_alpha(float(np.clip((u - mag_start - 0.3) / 0.5, 0, 1)))
+        if hax is not None:
+            if u < mag_start:
+                max_.set_visible(False)
+                return
+            hax.set_visible(False)
+            max_.set_visible(True)
+        # Alone, the card starts early enough that its rows are landing as the arrows come in.
+        mag_draw(max_, u - mag_start if hax is not None else u - max(mag_start - 1.6, 0.4))
+
     def hull_at(t):
         # Starts with the supercell build and finishes before the push-in ends. With a DOS act,
         # the hull hands over its place at DOS_START.
@@ -779,6 +921,8 @@ def render(cif, out, caption, handle, repeat, seconds, fps, size, hull=None, nam
         draw(frame)
         if hull_draw:
             hull_at(frame)
+        if mag_draw:
+            magnet_at(frame)
         fig.savefig(out, dpi=dpi, facecolor=BG)
         plt.close(fig)
         cleanup()
@@ -794,6 +938,8 @@ def render(cif, out, caption, handle, repeat, seconds, fps, size, hull=None, nam
             draw(t)
             if hull_draw:
                 hull_at(t)
+            if mag_draw:
+                magnet_at(t)
             writer.grab_frame(facecolor=BG)
     plt.close(fig)
     cleanup()
@@ -817,6 +963,10 @@ def main():
     ap.add_argument("--size", type=int, default=1080, help="video height in pixels; width is 16:9")
     ap.add_argument("--frame", type=float, help="write a PNG of the frame at this many seconds instead")
     ap.add_argument("--dos", help="dos.json: a second act with the density of states (see top of file)")
+    ap.add_argument("--magnet", help="magnet.json: moment arrows on the atoms and a card of magnetic properties")
+    ap.add_argument("--bond-scale", type=float, default=1.15,
+                    help="bond pairs within this many times the sum of covalent radii (1.05 keeps a bcc "
+                         "metal to its nearest neighbours)")
     ap.add_argument("--viewer", choices=["three", "mpl"], default="three",
                     help="three: the frontend's crystal viewer in headless Chromium (default); mpl: matplotlib")
     ap.add_argument("--bonds", help='bond only these element pairs, e.g. "B-Pt,Pt-Pt" (three viewer)')
@@ -828,13 +978,21 @@ def main():
         SHOTS.append((DOS_START + 0.6, 2.4, (320, 28, 1.25), "inout"))
         if a.seconds == 7:
             a.seconds = TIMELINE
+    if a.magnet:
+        # Moments point along an axis: stay side-on instead of looking down c, and hold longer.
+        SHOTS[1:] = [(3.0, 1.5, (115, 7, 1.0), "soft"), (4.7, 1.7, (205, 10, 1.3), "soft"),
+                     (6.8, 2.2, (250, 13, 1.0), "inout")]
+        if not a.dos:
+            globals()["TIMELINE"] = 10.0
+            if a.seconds == 7:
+                a.seconds = 10
     globals().update(THEMES["light" if a.light else "dark"])
     globals()["PUSH"] = a.push
     out = a.out or str(Path(a.cif).with_suffix(".png" if a.frame is not None else ".mp4"))
     rep = [int(x) for x in a.repeat.split(",")]
     rep = rep * 3 if len(rep) == 1 else rep
     render(a.cif, out, a.caption, a.handle, rep, a.seconds, a.fps, a.size, a.hull, a.name, a.frame,
-           a.viewer, a.bonds, a.dos, not a.no_polyhedra)
+           a.viewer, a.bonds, a.dos, not a.no_polyhedra, a.magnet, a.bond_scale)
 
 
 if __name__ == "__main__":
