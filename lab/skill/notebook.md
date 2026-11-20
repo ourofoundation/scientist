@@ -123,8 +123,7 @@ Constraints: required / forbidden elements, max atoms, anything else.
 
 ## Budget
 - Spend cap: $<n> (spent so far: $<m>, from experiments.jsonl)
-- Expensive runs: <k> allowed, <j> used
-- Where runs go: org <name/id>, team <name/id>, visibility <private/...>
+- Where runs go: org <name/id>, team <name/id>, visibility left unset (the team's audience)
 
 ## Status
 <one paragraph: where the goal stands, judged only from measurements —

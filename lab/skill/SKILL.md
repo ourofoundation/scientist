@@ -97,14 +97,17 @@ Turn the goal into an objective in `campaign.md`:
   ([routes.md](routes.md)), with a target, a weight or "hard", and its tier.
 - Say plainly which parts no route can measure. Never score those from
   literature or judgement.
-- Choose where runs go (org, team, visibility). By default that's the
-  "all" org, materials-science team, and private.
-- Propose a budget: a dollar cap and a number of expensive (hours-long) runs.
+- Choose where runs go (org, team). By default that's the "all" org,
+  materials-science team. Leave `visibility` unset so files, runs and posts
+  take the team's audience: campaigns can be public, so don't make private
+  files.
+- Propose a budget: a dollar cap per loop. It is a soft limit and the only
+  one; don't cap the number of runs.
 
 Show the objective and budget to the user and wait for their OK before
 spending anything. After that, work on your own within the budget. Ask
-again only to exceed it, to publish anything that isn't private, or to
-delete anything.
+again only to go well past it, to publish wider than the campaign's team,
+or to delete anything.
 
 ### 2. Research
 

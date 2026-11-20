@@ -104,8 +104,7 @@ Constraints:
 
 ## Budget
 - Spend cap: $ (spent so far: $0)
-- Expensive runs:  allowed, 0 used
-- Where runs go: org , team , visibility private
+- Where runs go: org , team , visibility unset (the team's audience)
 
 ## Status
 Not started.

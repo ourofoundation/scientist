@@ -69,3 +69,15 @@ def payload(action) -> dict:
     """A finished run's response as a dict (its error body when it failed)."""
     data = action.final_data if action.status == "success" else action.response
     return data if isinstance(data, dict) else {"raw": str(data)[:500]}
+
+
+def create_file(ouro, **kwargs):
+    """A file asset with the team's audience: public in a public team, else
+    organization. Campaign files are not made private (Matt, 2026-11-17).
+    ouro-py wants `visibility` spelled out, so try public first."""
+    try:
+        return ouro.files.create(visibility="public", **kwargs)
+    except Exception as error:  # an internal team refuses public assets
+        if "public" not in str(error).lower() and "visibility" not in str(error).lower():
+            raise
+        return ouro.files.create(visibility="organization", **kwargs)

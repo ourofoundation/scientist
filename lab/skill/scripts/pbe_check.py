@@ -28,7 +28,7 @@ lists that order as `site_elements`. Read the plan before submitting:
   - a parent with a known antiferromagnetic order needs that state on both
     sides of the balance.
 
-`submit` spends money (DFT) and makes the inputs private file assets, which
+`submit` spends money (DFT) and makes the inputs file assets (the team's audience), which
 the DFT routes require. It needs --yes, and the campaign's budget rules still
 apply. A run that hits the 3600 s cap stops uncharged: submit again with the
 same body and it resumes from the saved density.
@@ -192,10 +192,11 @@ def submit(args) -> None:
     for cell in todo:
         entry = state.setdefault(cell["label"], {})
         if "file" not in entry:
-            created = ouro.files.create(
+            created = labtools.create_file(
+                ouro,
                 name=f"{cell['formula']}: PBE check input ({args.campaign} {out.name})",
                 description=f"{cell['role']} in a PBE stability check; {cell['source']}. Primitive cell, sites in the route's read order.",
-                visibility="private", file_path=cell["cif"], org_id=org, team_id=team,
+                file_path=cell["cif"], org_id=org, team_id=team,
             )
             entry["file"] = str(created.id)
         body = {**planned["settings"], **cell.get("body", {})}
