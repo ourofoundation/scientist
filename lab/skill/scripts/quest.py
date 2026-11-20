@@ -7,11 +7,16 @@ twice.
     quest.py submit <file-id> --note "<one paragraph>" [--quest ID]
 
 A quest's evaluator runs routes as steps. Before it starts a step, Ouro looks
-for a run of yours of the same route, on the same input files, made with the
-same value for every setting the step fixes (a setting you didn't send
-counts at the route's default). If it finds one, the step takes it over and
-nothing runs. Settings the step leaves out, such as `initial_magmoms`, are
-yours to choose.
+for a run of yours of the same route, made with the same value for every
+setting the step fixes (a setting you didn't send counts at the route's
+default), either on the same input files or, for a step marked
+`idempotent` (a relax), the run that made its input. If it finds one, the
+step takes it over and nothing runs. Settings the step leaves out, such as
+`initial_magmoms`, are yours to choose.
+
+On the GHOST magnets quest that means: submit the file the campaign's DFT
+relax made (DZP, kspacing 0.2), and the quest's DFT relax is that run; its
+moments, anisotropy and Curie steps then read that same file.
 
 So submit the file the campaign measured, by its id, never a re-upload: a
 copy is a new asset and matches nothing.
@@ -145,14 +150,22 @@ def plan(ouro, file_id: str, definition: dict, me: str) -> dict:
             else:
                 made_later = True
         reuse, response = None, None
-        if not made_later and inputs:
-            route_defaults = defaults(ouro, step["route_id"], route_cache)
+        route_defaults = defaults(ouro, step["route_id"], route_cache) if inputs else {}
+
+        def own(row) -> bool:
+            sent = (row.get("metadata") or {}).get("body") or {}
+            return (row.get("status") == "success" and row.get("route_id") == step["route_id"]
+                    and row.get("user_id") == me
+                    and same_settings(step.get("body") or {}, sent, route_defaults))
+
+        if not made_later and step.get("idempotent") and len(inputs) == 1:
+            _, made_by = runs_on(ouro, next(iter(inputs.values())), asset_cache)
+            if made_by and own(made_by):
+                reuse, response = made_by["id"], made_by.get("response")
+        if not reuse and not made_later and inputs:
             rows, _ = runs_on(ouro, next(iter(inputs.values())), asset_cache)
             for row in sorted(rows, key=lambda r: r.get("created_at") or "", reverse=True):
-                if row.get("route_id") != step["route_id"] or row.get("user_id") != me:
-                    continue
-                sent = (row.get("metadata") or {}).get("body") or {}
-                if not same_settings(step.get("body") or {}, sent, route_defaults):
+                if not own(row):
                     continue
                 read = {i.get("name"): (i.get("asset") or {}).get("id") for i in row.get("input_assets") or []}
                 if read == inputs:
